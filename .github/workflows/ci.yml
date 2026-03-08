@@ -1,0 +1,68 @@
+name: CI Build Tests
+
+on:
+  push:
+  pull_request:
+  release:
+    types: [published]
+  schedule:
+    - cron: '30 3 * * 0'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux gcc-11 ──────────────────────────────────────────
+          - { os: ubuntu-latest, cc: gcc-11,   cxx: g++-11,     name: gcc-11 }
+
+          # ── Linux gcc-12 ──────────────────────────────────────────
+          - { os: ubuntu-latest, cc: gcc-12,   cxx: g++-12,     name: gcc-12 }
+
+          # ── Linux clang-14 ────────────────────────────────────────
+          - { os: ubuntu-latest, cc: clang-14, cxx: clang++-14, name: clang-14 }
+
+          # ── Linux clang-15 ────────────────────────────────────────
+          - { os: ubuntu-latest, cc: clang-15, cxx: clang++-15, name: clang-15 }
+
+          # ── macOS Homebrew clang (ARM64) ───────────────────────────
+          - { os: macos-latest, cc: /opt/homebrew/opt/llvm/bin/clang, cxx: /opt/homebrew/opt/llvm/bin/clang++, name: clang }
+
+          # ── macOS AppleClang (ARM64) ───────────────────────────────
+          - { os: macos-latest, name: AppleClang }
+
+          # ── Windows MSVC ──────────────────────────────────────────
+          - { os: windows-latest, name: msvc }
+
+          # ── Windows MinGW GCC ─────────────────────────────────────
+          - { os: windows-latest, name: mingw-gcc, cmake_flags: "-G \"MinGW Makefiles\" -DCMAKE_CXX_COMPILER=g++" }
+
+    name: ${{ matrix.os }} / ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Compiler (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cc }}
+          if [[ "${{ matrix.cxx }}" != *"clang"* ]]; then sudo apt-get install -y ${{ matrix.cxx }}; fi
+
+      - name: Install LLVM (macOS)
+        if: matrix.os == 'macos-latest' && matrix.name == 'clang'
+        run: brew install llvm || brew upgrade llvm
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake -S . -B build -DSOCKETPP_BUILD_EXAMPLES=ON -DSOCKETPP_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }}
+
+      - name: Build
+        run: cmake --build build --config Release -j2
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure -j2
