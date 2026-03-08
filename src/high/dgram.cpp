@@ -33,6 +33,7 @@
  * - A non-blocking recv loop that drains all available datagrams per wakeup
  * - A thread pool for dispatching on_data and on_error callbacks
  * - pause()/resume() flow control via event loop posts
+ * - Batch send/recv for high-throughput scenarios
  *
  * Unlike the old udp_server, the factory creates the object fully initialized
  * (socket open, event loop running) and the destructor tears it all down.
@@ -58,16 +59,24 @@ namespace socketpp
     namespace
     {
 
-        template<typename DgramType, typename Socket, typename Address> struct dgram_impl
+        template<typename DgramType, typename Socket, typename Address, typename SendEntry, typename Message>
+        struct dgram_impl
         {
             event_loop loop;
             std::unique_ptr<detail::thread_pool> pool;
             Socket socket;
 
             typename DgramType::data_handler on_data_cb;
+            typename DgramType::batch_data_handler on_data_batch_cb;
             typename DgramType::error_handler on_error_cb;
 
             std::vector<char> read_buf;
+
+            // Batch recv state
+            std::vector<char> batch_arena;
+            std::vector<msg_batch_entry> batch_entries;
+            size_t batch_size = 0;
+            size_t buf_size = 0;
 
             std::thread background_thread;
             std::atomic<bool> armed {false};
@@ -90,7 +99,20 @@ namespace socketpp
                 self.socket.set_non_blocking(true);
 
                 self.pool = std::make_unique<detail::thread_pool>(config.worker_threads);
+                self.buf_size = config.read_buffer_size;
                 self.read_buf.resize(config.read_buffer_size);
+
+                // Allocate batch recv arena and entries
+                self.batch_size = config.recv_batch_size;
+                self.batch_arena.resize(self.batch_size * config.read_buffer_size);
+                self.batch_entries.resize(self.batch_size);
+
+                for (size_t i = 0; i < self.batch_size; ++i)
+                {
+                    self.batch_entries[i].buf = self.batch_arena.data() + i * config.read_buffer_size;
+                    self.batch_entries[i].len = config.read_buffer_size;
+                    self.batch_entries[i].transferred = 0;
+                }
 
                 // Start the event loop on a background thread. The socket is NOT
                 // registered for reading yet -- that happens in arm().
@@ -99,7 +121,95 @@ namespace socketpp
                 return {};
             }
 
-            /// Called by on_data() to register the socket for readable events.
+            /// Handles a readable event — drains via recv_batch, dispatches to callbacks.
+            void handle_readable()
+            {
+                constexpr size_t max_iterations = 8; // 8 * batch_size datagrams max
+
+                for (size_t iter = 0; iter < max_iterations; ++iter)
+                {
+                    // Reset entry lengths for this batch
+                    for (size_t i = 0; i < batch_size; ++i)
+                    {
+                        batch_entries[i].len = buf_size;
+                        batch_entries[i].transferred = 0;
+                    }
+
+                    auto recv_r = socket.recv_batch(span<msg_batch_entry>(batch_entries));
+
+                    if (!recv_r)
+                    {
+                        if (recv_r.error() == make_error_code(errc::would_block))
+                            break;
+
+                        if (on_error_cb)
+                        {
+                            auto ec = recv_r.error();
+                            pool->submit([this, ec]() { on_error_cb(ec); });
+                        }
+
+                        break;
+                    }
+
+                    auto count = recv_r.value();
+
+                    if (count == 0)
+                        break;
+
+                    if (on_data_batch_cb)
+                    {
+                        // Copy received data into a shared buffer and build message array
+                        size_t total_bytes = 0;
+
+                        for (int i = 0; i < count; ++i)
+                            total_bytes += batch_entries[i].transferred;
+
+                        auto shared_buf = std::make_shared<std::vector<char>>(total_bytes);
+                        auto shared_msgs = std::make_shared<std::vector<Message>>(count);
+
+                        size_t offset = 0;
+
+                        for (int i = 0; i < count; ++i)
+                        {
+                            auto &entry = batch_entries[i];
+                            std::memcpy(shared_buf->data() + offset, entry.buf, entry.transferred);
+
+                            Address from;
+                            std::memcpy(&from, entry.addr.data(), sizeof(from));
+
+                            (*shared_msgs)[i].data = shared_buf->data() + offset;
+                            (*shared_msgs)[i].len = entry.transferred;
+                            (*shared_msgs)[i].from = from;
+
+                            offset += entry.transferred;
+                        }
+
+                        pool->submit(
+                            [this, shared_buf, shared_msgs]()
+                            { on_data_batch_cb(span<const Message>(shared_msgs->data(), shared_msgs->size())); });
+                    }
+                    else if (on_data_cb)
+                    {
+                        for (int i = 0; i < count; ++i)
+                        {
+                            auto &entry = batch_entries[i];
+                            auto data = std::vector<char>(
+                                static_cast<char *>(entry.buf), static_cast<char *>(entry.buf) + entry.transferred);
+
+                            Address sender;
+                            std::memcpy(&sender, entry.addr.data(), sizeof(sender));
+
+                            pool->submit([this, d = std::move(data), sender]()
+                                         { on_data_cb(d.data(), d.size(), sender); });
+                        }
+                    }
+
+                    if (static_cast<size_t>(count) < batch_size)
+                        break;
+                }
+            }
+
+            /// Called by on_data() / on_data_batch() to register the socket for readable events.
             void arm()
             {
                 if (armed.exchange(true, std::memory_order_acq_rel))
@@ -118,37 +228,7 @@ namespace socketpp
                                 if (!has_event(events, io_event::readable))
                                     return;
 
-                                constexpr size_t max_drain = 256;
-
-                                for (size_t drain_count = 0; drain_count < max_drain; ++drain_count)
-                                {
-                                    Address sender;
-                                    auto recv_r = socket.recv_from(read_buf.data(), read_buf.size(), sender);
-
-                                    if (!recv_r)
-                                    {
-                                        if (recv_r.error() == make_error_code(errc::would_block))
-                                            break;
-
-                                        if (on_error_cb)
-                                        {
-                                            auto ec = recv_r.error();
-                                            pool->submit([this, ec]() { on_error_cb(ec); });
-                                        }
-
-                                        break;
-                                    }
-
-                                    auto n = recv_r.value();
-
-                                    if (on_data_cb)
-                                    {
-                                        auto data = std::vector<char>(read_buf.data(), read_buf.data() + n);
-
-                                        pool->submit([this, d = std::move(data), sender]()
-                                                     { on_data_cb(d.data(), d.size(), sender); });
-                                    }
-                                }
+                                handle_readable();
                             });
                     });
             }
@@ -186,39 +266,25 @@ namespace socketpp
                                 if (!has_event(events, io_event::readable))
                                     return;
 
-                                constexpr size_t max_drain = 256;
-
-                                for (size_t drain_count = 0; drain_count < max_drain; ++drain_count)
-                                {
-                                    Address sender;
-                                    auto recv_r = socket.recv_from(read_buf.data(), read_buf.size(), sender);
-
-                                    if (!recv_r)
-                                    {
-                                        if (recv_r.error() == make_error_code(errc::would_block))
-                                            break;
-
-                                        if (on_error_cb)
-                                        {
-                                            auto ec = recv_r.error();
-                                            pool->submit([this, ec]() { on_error_cb(ec); });
-                                        }
-
-                                        break;
-                                    }
-
-                                    auto n = recv_r.value();
-
-                                    if (on_data_cb)
-                                    {
-                                        auto data = std::vector<char>(read_buf.data(), read_buf.data() + n);
-
-                                        pool->submit([this, d = std::move(data), sender]()
-                                                     { on_data_cb(d.data(), d.size(), sender); });
-                                    }
-                                }
+                                handle_readable();
                             });
                     });
+            }
+
+            /// Set on_data callback — clears on_data_batch (mutually exclusive).
+            void do_on_data(typename DgramType::data_handler handler)
+            {
+                on_data_cb = std::move(handler);
+                on_data_batch_cb = nullptr;
+                arm();
+            }
+
+            /// Set on_data_batch callback — clears on_data (mutually exclusive).
+            void do_on_data_batch(typename DgramType::batch_data_handler handler)
+            {
+                on_data_batch_cb = std::move(handler);
+                on_data_cb = nullptr;
+                arm();
             }
 
             /// Synchronous send -- called directly from the user's thread.
@@ -226,6 +292,38 @@ namespace socketpp
             {
                 auto r = socket.send_to(data, len, dest);
                 return !!r;
+            }
+
+            /// Synchronous batch send -- called directly from the user's thread.
+            result<int> do_send_batch(span<const SendEntry> msgs)
+            {
+                // Stack-alloc up to 64 entries, heap beyond
+                constexpr size_t stack_limit = 64;
+                msg_batch_entry stack_buf[stack_limit];
+                std::vector<msg_batch_entry> heap_buf;
+
+                msg_batch_entry *entries;
+
+                if (msgs.size() <= stack_limit)
+                {
+                    entries = stack_buf;
+                }
+                else
+                {
+                    heap_buf.resize(msgs.size());
+                    entries = heap_buf.data();
+                }
+
+                for (size_t i = 0; i < msgs.size(); ++i)
+                {
+                    sock_address sa = msgs[i].dest;
+                    entries[i].buf = const_cast<void *>(msgs[i].data);
+                    entries[i].len = msgs[i].len;
+                    entries[i].addr = sa;
+                    entries[i].transferred = 0;
+                }
+
+                return socket.send_batch(span<msg_batch_entry>(entries, msgs.size()));
             }
 
             /// Get the local bound address.
@@ -270,7 +368,7 @@ namespace socketpp
 
     // ── dgram4 ───────────────────────────────────────────────────────────────────
 
-    struct dgram4::impl : dgram_impl<dgram4, udp4_socket, inet4_address>
+    struct dgram4::impl : dgram_impl<dgram4, udp4_socket, inet4_address, dgram4_send_entry, dgram4_message>
     {
     };
 
@@ -298,8 +396,13 @@ namespace socketpp
 
     dgram4 &dgram4::on_data(data_handler handler)
     {
-        impl_->on_data_cb = std::move(handler);
-        impl_->arm();
+        impl_->do_on_data(std::move(handler));
+        return *this;
+    }
+
+    dgram4 &dgram4::on_data_batch(batch_data_handler handler)
+    {
+        impl_->do_on_data_batch(std::move(handler));
         return *this;
     }
 
@@ -329,6 +432,11 @@ namespace socketpp
         return impl_->do_send_to(data, len, dest);
     }
 
+    result<int> dgram4::send_batch(span<const dgram4_send_entry> msgs)
+    {
+        return impl_->do_send_batch(msgs);
+    }
+
     inet4_address dgram4::local_addr() const
     {
         return impl_->do_local_addr();
@@ -336,7 +444,7 @@ namespace socketpp
 
     // ── dgram6 ───────────────────────────────────────────────────────────────────
 
-    struct dgram6::impl : dgram_impl<dgram6, udp6_socket, inet6_address>
+    struct dgram6::impl : dgram_impl<dgram6, udp6_socket, inet6_address, dgram6_send_entry, dgram6_message>
     {
     };
 
@@ -364,8 +472,13 @@ namespace socketpp
 
     dgram6 &dgram6::on_data(data_handler handler)
     {
-        impl_->on_data_cb = std::move(handler);
-        impl_->arm();
+        impl_->do_on_data(std::move(handler));
+        return *this;
+    }
+
+    dgram6 &dgram6::on_data_batch(batch_data_handler handler)
+    {
+        impl_->do_on_data_batch(std::move(handler));
         return *this;
     }
 
@@ -393,6 +506,11 @@ namespace socketpp
     bool dgram6::send_to(const void *data, size_t len, const inet6_address &dest)
     {
         return impl_->do_send_to(data, len, dest);
+    }
+
+    result<int> dgram6::send_batch(span<const dgram6_send_entry> msgs)
+    {
+        return impl_->do_send_batch(msgs);
     }
 
     inet6_address dgram6::local_addr() const

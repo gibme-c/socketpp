@@ -66,6 +66,41 @@ namespace socketpp
         size_t worker_threads = 0; ///< Thread pool size. 0 = auto-detect.
         socket_options sock_opts = socket_options {}.reuse_addr(true); ///< Socket options applied before bind.
         size_t read_buffer_size = 65536; ///< Read buffer size (>= largest expected datagram).
+        size_t recv_batch_size = 32; ///< Max datagrams per recv_batch() call.
+    };
+
+    // ── Batch Send/Recv Types ─────────────────────────────────────────────────
+
+    /** @brief Entry for batch send on dgram4. */
+    struct dgram4_send_entry
+    {
+        const void *data;
+        size_t len;
+        inet4_address dest;
+    };
+
+    /** @brief Entry for batch send on dgram6. */
+    struct dgram6_send_entry
+    {
+        const void *data;
+        size_t len;
+        inet6_address dest;
+    };
+
+    /** @brief Received datagram delivered to batch callback on dgram4. */
+    struct dgram4_message
+    {
+        const char *data;
+        size_t len;
+        inet4_address from;
+    };
+
+    /** @brief Received datagram delivered to batch callback on dgram6. */
+    struct dgram6_message
+    {
+        const char *data;
+        size_t len;
+        inet6_address from;
     };
 
     /**
@@ -81,6 +116,9 @@ namespace socketpp
       public:
         /** @brief Callback invoked when a datagram is received. Runs on the thread pool. */
         using data_handler = std::function<void(const char *, size_t, const inet4_address &)>;
+
+        /** @brief Callback invoked when a batch of datagrams is received. Runs on the thread pool. */
+        using batch_data_handler = std::function<void(span<const dgram4_message>)>;
 
         /** @brief Callback invoked when a recv error occurs. Runs on the thread pool. */
         using error_handler = std::function<void(std::error_code)>;
@@ -105,10 +143,24 @@ namespace socketpp
          * readable events. Incoming datagrams are delivered to the handler
          * on the thread pool.
          *
+         * Mutually exclusive with on_data_batch() — setting one clears the other.
+         *
          * @param handler The data callback.
          * @return Reference to this instance for chaining.
          */
         dgram4 &on_data(data_handler handler);
+
+        /**
+         * @brief Set the batch data handler and arm readable interest.
+         *
+         * Incoming datagrams are delivered in batches to the handler on the
+         * thread pool. Mutually exclusive with on_data() — setting one clears
+         * the other.
+         *
+         * @param handler The batch data callback.
+         * @return Reference to this instance for chaining.
+         */
+        dgram4 &on_data_batch(batch_data_handler handler);
 
         /**
          * @brief Set the error handler.
@@ -153,6 +205,16 @@ namespace socketpp
         bool send_to(const void *data, size_t len, const inet4_address &dest);
 
         /**
+         * @brief Send multiple datagrams in a single batch.
+         *
+         * Performs a synchronous batch send on the calling thread.
+         *
+         * @param msgs Span of send entries describing each datagram.
+         * @return Number of messages sent, or an error code.
+         */
+        result<int> send_batch(span<const dgram4_send_entry> msgs);
+
+        /**
          * @brief Get the local address the socket is bound to.
          * @return The bound address, including the actual port if 0 was used.
          */
@@ -190,6 +252,9 @@ namespace socketpp
         /** @brief Callback invoked when a datagram is received. */
         using data_handler = std::function<void(const char *, size_t, const inet6_address &)>;
 
+        /** @brief Callback invoked when a batch of datagrams is received. */
+        using batch_data_handler = std::function<void(span<const dgram6_message>)>;
+
         /** @brief Callback invoked when a recv error occurs. */
         using error_handler = std::function<void(std::error_code)>;
 
@@ -201,8 +266,11 @@ namespace socketpp
          */
         static result<dgram6> create(inet6_address bind_addr = inet6_address::any(0), dgram_config config = {});
 
-        /** @brief Set the data handler and arm readable interest. */
+        /** @brief Set the data handler and arm readable interest. Mutually exclusive with on_data_batch(). */
         dgram6 &on_data(data_handler handler);
+
+        /** @brief Set the batch data handler and arm readable interest. Mutually exclusive with on_data(). */
+        dgram6 &on_data_batch(batch_data_handler handler);
 
         /** @brief Set the error handler. */
         dgram6 &on_error(error_handler handler);
@@ -224,6 +292,13 @@ namespace socketpp
          * @return true if the send succeeded, false on error.
          */
         bool send_to(const void *data, size_t len, const inet6_address &dest);
+
+        /**
+         * @brief Send multiple datagrams in a single batch.
+         * @param msgs Span of send entries describing each datagram.
+         * @return Number of messages sent, or an error code.
+         */
+        result<int> send_batch(span<const dgram6_send_entry> msgs);
 
         /** @brief Get the local address the socket is bound to. */
         inet6_address local_addr() const;
