@@ -9,10 +9,11 @@ Both IPv4 and IPv6 are first-class citizens. Every type has separate IPv4 and IP
 ## Features
 
 - **TCP streams** -- `stream4`, `stream6` with `on_connect`, `on_data`, `on_close`, and `on_error` handlers; unified type for both server (`listen`) and client (`connect`) roles
-- **UDP datagrams** -- `dgram4`, `dgram6` with `on_data` handler and synchronous `send_to()`; no client/server distinction
+- **UDP datagrams** -- `dgram4`, `dgram6` with `on_data` handler and synchronous `send_to()`; batch send/recv via `send_batch()` and `on_data_batch()`; no client/server distinction
 - **Native event backends** -- epoll (Linux), kqueue (macOS), IOCP (Windows); selected at compile time
 - **RAII lifecycle** -- factory methods open sockets and start the event loop; destructors clean everything up; no `start()`/`stop()`/`run()` needed
 - **Flow control** -- `pause()`/`resume()` on streams, connections, and datagrams backed by kernel buffers
+- **Timers and dispatch** -- `defer()` for one-shot timers, `repeat()` for recurring timers, `post()` for cross-thread dispatch; all callbacks run on the thread pool
 - **Thread pool dispatch** -- all user callbacks run on a worker pool (defaults to hardware concurrency, minimum 2)
 - **Portable error handling** -- `result<T>` return type with `socketpp::errc` codes that normalize platform-specific socket errors
 - **Socket options builder** -- `socket_options` class covering reuse, keepalive, nodelay, buffer sizes, linger, multicast, and more
@@ -62,7 +63,7 @@ Include the umbrella header:
 #include <socketpp.hpp>
 ```
 
-This provides the full high-level API: `stream4`, `stream6`, `dgram4`, `dgram6`, address types (`inet4_address`, `inet6_address`), `socket_options`, `result<T>`, and error codes.
+This provides the full high-level API: `stream4`, `stream6`, `dgram4`, `dgram6`, address types (`inet4_address`, `inet6_address`), `socket_options`, `timer_handle`, `result<T>`, and error codes.
 
 ### TCP Echo Server
 
@@ -237,6 +238,12 @@ server.connection_count(); // current active connections
 server.local_addr();       // bound address (useful with ephemeral port)
 server.pause();            // stop accepting (kernel backlog buffers pending)
 server.resume();           // resume accepting
+
+// Timers and dispatch (available in both listen and connect modes)
+auto h = server.defer(std::chrono::seconds(30), [] { /* one-shot */ });
+auto h2 = server.repeat(std::chrono::seconds(5), [] { /* recurring */ });
+server.post([] { /* fire-and-forget on thread pool */ });
+h.cancel();   // cancel a timer (no-op if already fired)
 ```
 
 **Connect mode (client):**
@@ -299,7 +306,8 @@ auto r = socketpp::dgram4::create(
     socketpp::dgram_config{
         .worker_threads = 4,         // thread pool size (0 = auto)
         .sock_opts = socketpp::socket_options{}.reuse_addr(true),
-        .read_buffer_size = 65536    // >= largest expected datagram
+        .read_buffer_size = 65536,   // >= largest expected datagram
+        .recv_batch_size = 32        // max datagrams per recv_batch() call
     });
 if (!r) { /* handle error */ return 1; }
 
@@ -320,6 +328,48 @@ sock.paused();      // check pause state
 ```
 
 `send_to()` is synchronous and returns `true` on success. Port 0 is supported for ephemeral port binding.
+
+**Batch send/recv:**
+
+```cpp
+// Batch receive -- mutually exclusive with on_data()
+sock.on_data_batch([](socketpp::span<const socketpp::dgram4_message> msgs) {
+    for (auto &msg : msgs)
+        std::cout << "from " << msg.from.to_string()
+                  << ": " << std::string(msg.data, msg.len) << "\n";
+});
+
+// Batch send
+socketpp::dgram4_send_entry entries[] = {
+    {buf1, len1, dest1},
+    {buf2, len2, dest2}
+};
+auto r = sock.send_batch(entries); // result<int> -- number sent
+```
+
+`on_data_batch()` and `on_data()` are mutually exclusive -- setting one clears the other. The `recv_batch_size` config option controls how many datagrams are read per kernel call (default 32).
+
+**Timers and dispatch:**
+
+```cpp
+// One-shot timer -- fires once after delay, returns a cancellable handle
+auto h = sock.defer(std::chrono::milliseconds(500), [] {
+    std::cout << "fired once\n";
+});
+h.cancel(); // cancel before it fires (no-op if already fired)
+
+// Repeating timer -- fires at interval until cancelled
+auto h2 = sock.repeat(std::chrono::seconds(1), [] {
+    std::cout << "tick\n";
+});
+
+// Cross-thread dispatch -- fire-and-forget
+sock.post([] {
+    std::cout << "runs on thread pool\n";
+});
+```
+
+All timer and post callbacks run on the thread pool, never on the event loop thread.
 
 ### Addresses
 
@@ -379,7 +429,7 @@ if (!r)
 
 Each high-level object owns a single event loop backed by the platform's native I/O multiplexer. The event loop runs on a dedicated background thread started by the factory method. It monitors sockets for readability and writability, dispatching completions to the thread pool.
 
-The event loop never executes user callbacks directly. All `on_connect`, `on_data`, `on_close`, `on_error` handlers are posted to the thread pool, keeping the I/O path free of application latency.
+The event loop never executes user callbacks directly. All `on_connect`, `on_data`, `on_data_batch`, `on_close`, `on_error`, timer, and `post()` callbacks are dispatched to the thread pool, keeping the I/O path free of application latency.
 
 ### Connection Lifetime
 
@@ -403,7 +453,7 @@ Build with `-DSOCKETPP_BUILD_TESTS=ON` to get the test executables:
 ./build/tests           # all platforms and compilers
 ```
 
-The test suite includes low-level socket tests, event loop integration tests, and high-level API tests covering TCP streams and UDP datagrams with round-trip verification, pause/resume flow control, and concurrent access patterns.
+The test suite includes low-level socket tests, event loop integration tests, and high-level API tests covering TCP streams, UDP datagrams with round-trip verification, batch send/recv, pause/resume flow control, timers, cross-thread dispatch, and concurrent access patterns.
 
 ## License
 
