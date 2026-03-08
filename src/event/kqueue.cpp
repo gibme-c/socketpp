@@ -286,8 +286,8 @@ namespace socketpp::detail
             if (!repeat)
                 flags |= EV_ONESHOT;
 
-            // NOTE_MSECONDS tells kqueue to interpret the data field as
-            // milliseconds rather than the default (platform-dependent) unit.
+                // NOTE_MSECONDS tells kqueue to interpret the data field as
+                // milliseconds rather than the default (platform-dependent) unit.
 #ifdef NOTE_MSECONDS
             const unsigned int timer_units = NOTE_MSECONDS;
 #else

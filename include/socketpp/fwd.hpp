@@ -83,6 +83,10 @@ namespace socketpp
     class stream4;
     class stream6;
     struct dgram_config;
+    struct dgram4_send_entry;
+    struct dgram6_send_entry;
+    struct dgram4_message;
+    struct dgram6_message;
     class dgram4;
     class dgram6;
 

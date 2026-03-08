@@ -769,6 +769,175 @@ void test_dgram_pause_resume()
 }
 
 // ===========================================================================
+// dgram4 batch send
+// ===========================================================================
+
+void test_dgram4_batch_send()
+{
+    const uint16_t port = 19885;
+    const int num_messages = 10;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+    std::atomic<int> recv_count {0};
+
+    server.on_data([&recv_count](const char *, size_t, const socketpp::inet4_address &)
+                   { recv_count.fetch_add(1, std::memory_order_relaxed); });
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+
+    platform_sleep_ms(50);
+
+    // Build batch
+    std::vector<std::string> payloads(num_messages);
+    std::vector<socketpp::dgram4_send_entry> entries(num_messages);
+
+    for (int i = 0; i < num_messages; ++i)
+    {
+        payloads[i] = "batch-" + std::to_string(i);
+        entries[i].data = payloads[i].data();
+        entries[i].len = payloads[i].size();
+        entries[i].dest = socketpp::inet4_address::loopback(port);
+    }
+
+    auto send_r = client.send_batch(socketpp::span<const socketpp::dgram4_send_entry>(entries));
+    CHECK_MSG(send_r, "send_batch should succeed");
+
+    if (send_r)
+        CHECK_MSG(send_r.value() == num_messages, "send_batch should send all messages");
+
+    auto ok = wait_for_count(recv_count, num_messages, 5000);
+    CHECK_MSG(ok, "server should receive all batch-sent messages");
+}
+
+// ===========================================================================
+// dgram4 batch recv
+// ===========================================================================
+
+void test_dgram4_batch_recv()
+{
+    const uint16_t port = 19886;
+    const int num_messages = 10;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+    std::atomic<int> recv_count {0};
+    std::atomic<int> batch_calls {0};
+
+    server.on_data_batch(
+        [&recv_count, &batch_calls](socketpp::span<const socketpp::dgram4_message> msgs)
+        {
+            batch_calls.fetch_add(1, std::memory_order_relaxed);
+            recv_count.fetch_add(static_cast<int>(msgs.size()), std::memory_order_relaxed);
+        });
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+
+    platform_sleep_ms(50);
+
+    for (int i = 0; i < num_messages; ++i)
+    {
+        std::string msg = "msg-" + std::to_string(i);
+        client.send_to(msg.data(), msg.size(), socketpp::inet4_address::loopback(port));
+    }
+
+    auto ok = wait_for_count(recv_count, num_messages, 5000);
+    CHECK_MSG(ok, "batch recv should receive all messages");
+    CHECK_MSG(batch_calls.load() >= 1, "batch callback should be called at least once");
+}
+
+// ===========================================================================
+// dgram4 batch roundtrip
+// ===========================================================================
+
+void test_dgram4_batch_roundtrip()
+{
+    const uint16_t port = 19887;
+    const int num_messages = 8;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+
+    // Server echoes back each batch via send_batch
+    server.on_data_batch(
+        [&server](socketpp::span<const socketpp::dgram4_message> msgs)
+        {
+            std::vector<socketpp::dgram4_send_entry> replies(msgs.size());
+
+            for (size_t i = 0; i < msgs.size(); ++i)
+            {
+                replies[i].data = msgs[i].data;
+                replies[i].len = msgs[i].len;
+                replies[i].dest = msgs[i].from;
+            }
+
+            server.send_batch(socketpp::span<const socketpp::dgram4_send_entry>(replies));
+        });
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+    std::atomic<int> echo_count {0};
+
+    client.on_data([&echo_count](const char *, size_t, const socketpp::inet4_address &)
+                   { echo_count.fetch_add(1, std::memory_order_relaxed); });
+
+    platform_sleep_ms(50);
+
+    // Send batch from client
+    std::vector<std::string> payloads(num_messages);
+    std::vector<socketpp::dgram4_send_entry> entries(num_messages);
+
+    for (int i = 0; i < num_messages; ++i)
+    {
+        payloads[i] = "rt-" + std::to_string(i);
+        entries[i].data = payloads[i].data();
+        entries[i].len = payloads[i].size();
+        entries[i].dest = socketpp::inet4_address::loopback(port);
+    }
+
+    auto send_r = client.send_batch(socketpp::span<const socketpp::dgram4_send_entry>(entries));
+    CHECK_MSG(send_r, "send_batch should succeed");
+
+    auto ok = wait_for_count(echo_count, num_messages, 5000);
+    CHECK_MSG(ok, "client should receive all echoed messages");
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -808,6 +977,15 @@ int main()
 
     std::cerr << "\n--- dgram pause/resume ---\n";
     RUN_TEST(test_dgram_pause_resume);
+
+    std::cerr << "\n--- dgram batch send ---\n";
+    RUN_TEST(test_dgram4_batch_send);
+
+    std::cerr << "\n--- dgram batch recv ---\n";
+    RUN_TEST(test_dgram4_batch_recv);
+
+    std::cerr << "\n--- dgram batch roundtrip ---\n";
+    RUN_TEST(test_dgram4_batch_roundtrip);
 
     std::cerr << "\n" << g_test_count << " checks, " << g_fail_count << " failures\n";
     return g_fail_count > 0 ? 1 : 0;
