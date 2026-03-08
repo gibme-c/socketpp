@@ -294,7 +294,11 @@ namespace socketpp::detail
                 if (peer_socket_.is_open())
                 {
                     loop_->io().remove(peer_socket_.native_handle());
-                    // peer_socket_ destructor closes the fd
+                    // Close the socket now so the kernel stops routing the 4-tuple
+                    // here. Without this, the connected socket stays open (impl is
+                    // still alive in claimed_peers) and swallows datagrams that
+                    // should fall through to the parent socket.
+                    peer_socket_ = PeerSocket {};
                 }
             }
         }
