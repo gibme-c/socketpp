@@ -36,6 +36,7 @@
 #include "stream_connection_impl.hpp"
 
 #include <cstring>
+#include <future>
 #include <socketpp/socket/tcp_connector.hpp>
 #include <socketpp/socket/tcp_listener.hpp>
 #include <thread>
@@ -433,6 +434,46 @@ namespace socketpp
                 }
             }
 
+            // ── Timer / Post ────────────────────────────────────────────────
+
+            timer_handle do_defer(std::chrono::milliseconds delay, std::function<void()> cb)
+            {
+                auto p = std::make_shared<std::promise<timer_handle>>();
+                auto f = p->get_future();
+                auto *pp = pool.get();
+
+                loop.post(
+                    [this, delay, cb = std::move(cb), p, pp]() mutable
+                    {
+                        auto h = loop.defer(delay, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        p->set_value(h);
+                    });
+
+                return f.get();
+            }
+
+            timer_handle do_repeat(std::chrono::milliseconds interval, std::function<void()> cb)
+            {
+                auto p = std::make_shared<std::promise<timer_handle>>();
+                auto f = p->get_future();
+                auto *pp = pool.get();
+
+                loop.post(
+                    [this, interval, cb = std::move(cb), p, pp]() mutable
+                    {
+                        auto h = loop.repeat(interval, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        p->set_value(h);
+                    });
+
+                return f.get();
+            }
+
+            void do_post(std::function<void()> cb)
+            {
+                auto *pp = pool.get();
+                loop.post([pp, cb = std::move(cb)]() { pp->submit(cb); });
+            }
+
             // ── Destroy ─────────────────────────────────────────────────────
 
             void do_destroy()
@@ -598,6 +639,21 @@ namespace socketpp
         return *this;
     }
 
+    timer_handle stream4::defer(std::chrono::milliseconds delay, std::function<void()> cb)
+    {
+        return impl_->do_defer(delay, std::move(cb));
+    }
+
+    timer_handle stream4::repeat(std::chrono::milliseconds interval, std::function<void()> cb)
+    {
+        return impl_->do_repeat(interval, std::move(cb));
+    }
+
+    void stream4::post(std::function<void()> cb)
+    {
+        impl_->do_post(std::move(cb));
+    }
+
     void stream4::pause()
     {
         impl_->do_pause();
@@ -740,6 +796,21 @@ namespace socketpp
     {
         impl_->on_error_cb = std::move(handler);
         return *this;
+    }
+
+    timer_handle stream6::defer(std::chrono::milliseconds delay, std::function<void()> cb)
+    {
+        return impl_->do_defer(delay, std::move(cb));
+    }
+
+    timer_handle stream6::repeat(std::chrono::milliseconds interval, std::function<void()> cb)
+    {
+        return impl_->do_repeat(interval, std::move(cb));
+    }
+
+    void stream6::post(std::function<void()> cb)
+    {
+        impl_->do_post(std::move(cb));
     }
 
     void stream6::pause()
