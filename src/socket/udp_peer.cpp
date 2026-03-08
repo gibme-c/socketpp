@@ -30,10 +30,21 @@
 #include <cstring>
 #include <socketpp/socket/udp_peer.hpp>
 
+#if defined(SOCKETPP_OS_WINDOWS)
+#include "udp_mux.hpp"
+
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <vector>
+#endif
+
 namespace socketpp
 {
 
     // ── Helper: create a connected UDP socket ────────────────────────────────────
+
+#if !defined(SOCKETPP_OS_WINDOWS)
 
     namespace
     {
@@ -114,22 +125,48 @@ namespace socketpp
 
     } // namespace
 
+#endif // !SOCKETPP_OS_WINDOWS
+
     // ── udp4_peer_socket::impl (POSIX: connected socket; Windows: mux) ──────────
 
 #if defined(SOCKETPP_OS_WINDOWS)
 
-    // On Windows, we use a userspace mux since there's no kernel 4-tuple demux.
-    // The mux is deferred to Phase 9 — for now, use a simple connected socket.
-    // This will be upgraded to the full mux implementation in Phase 9.
-
     struct udp4_peer_socket::impl
     {
-        socket sock;
+        std::shared_ptr<detail::udp_mux<inet4_address>> mux;
+        inet4_address peer_addr;
+        std::mutex queue_mutex;
+        std::condition_variable queue_cv;
+        std::deque<std::vector<char>> recv_queue;
+        std::atomic<bool> closed {false};
+
+        ~impl()
+        {
+            if (mux)
+                mux->deregister_peer(peer_addr);
+
+            closed.store(true, std::memory_order_relaxed);
+            queue_cv.notify_all();
+        }
     };
 
     struct udp6_peer_socket::impl
     {
-        socket sock;
+        std::shared_ptr<detail::udp_mux<inet6_address>> mux;
+        inet6_address peer_addr;
+        std::mutex queue_mutex;
+        std::condition_variable queue_cv;
+        std::deque<std::vector<char>> recv_queue;
+        std::atomic<bool> closed {false};
+
+        ~impl()
+        {
+            if (mux)
+                mux->deregister_peer(peer_addr);
+
+            closed.store(true, std::memory_order_relaxed);
+            queue_cv.notify_all();
+        }
     };
 
 #else
@@ -171,6 +208,35 @@ namespace socketpp
         const inet4_address &peer,
         const socket_options &opts) noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        auto mux = detail::udp_mux<inet4_address>::get_or_create(local, opts);
+
+        if (!mux)
+            return make_error_code(errc::invalid_state);
+
+        udp4_peer_socket ps;
+        ps.peer_ = peer;
+        ps.impl_ = std::make_unique<impl>();
+        ps.impl_->mux = std::move(mux);
+        ps.impl_->peer_addr = peer;
+
+        auto *raw_impl = ps.impl_.get();
+
+        auto reg_r = ps.impl_->mux->register_peer(
+            peer,
+            [raw_impl](const void *data, size_t len)
+            {
+                std::lock_guard<std::mutex> lk(raw_impl->queue_mutex);
+                raw_impl->recv_queue.emplace_back(
+                    static_cast<const char *>(data), static_cast<const char *>(data) + len);
+                raw_impl->queue_cv.notify_one();
+            });
+
+        if (!reg_r)
+            return reg_r.error();
+
+        return ps;
+#else
         const sock_address local_sa = local;
         const sock_address peer_sa = peer;
 
@@ -184,10 +250,19 @@ namespace socketpp
         ps.impl_->sock = std::move(r.value());
 
         return ps;
+#endif
     }
 
     result<size_t> udp4_peer_socket::send(const void *data, size_t len, int flags) noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        (void)flags;
+
+        if (SOCKETPP_UNLIKELY(!impl_ || !impl_->mux))
+            return make_error_code(errc::invalid_state);
+
+        return impl_->mux->send_to(data, len, impl_->peer_addr);
+#else
         if (SOCKETPP_UNLIKELY(!impl_ || !impl_->sock.is_open()))
             return make_error_code(errc::invalid_state);
 
@@ -195,51 +270,73 @@ namespace socketpp
         flags |= MSG_NOSIGNAL;
 #endif
 
-#if defined(SOCKETPP_OS_WINDOWS)
-        auto n = ::send(
-            static_cast<SOCKET>(impl_->sock.native_handle()),
-            static_cast<const char *>(data),
-            static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))),
-            flags);
-#else
         auto n = ::send(static_cast<int>(impl_->sock.native_handle()), data, len, flags);
-#endif
 
         if (SOCKETPP_UNLIKELY(n < 0))
             return normalize_error(last_socket_error());
 
         return static_cast<size_t>(n);
+#endif
     }
 
     result<size_t> udp4_peer_socket::recv(void *buf, size_t len, int flags) noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        (void)flags;
+
+        if (SOCKETPP_UNLIKELY(!impl_))
+            return make_error_code(errc::invalid_state);
+
+        try
+        {
+            std::unique_lock<std::mutex> lk(impl_->queue_mutex);
+
+            impl_->queue_cv.wait(
+                lk, [this] { return !impl_->recv_queue.empty() || impl_->closed.load(std::memory_order_relaxed); });
+
+            if (impl_->recv_queue.empty())
+                return make_error_code(errc::invalid_state);
+
+            auto &front = impl_->recv_queue.front();
+            auto copy_len = (std::min)(len, front.size());
+            std::memcpy(buf, front.data(), copy_len);
+            impl_->recv_queue.pop_front();
+
+            return copy_len;
+        }
+        catch (...)
+        {
+            return make_error_code(errc::invalid_state);
+        }
+#else
         if (SOCKETPP_UNLIKELY(!impl_ || !impl_->sock.is_open()))
             return make_error_code(errc::invalid_state);
 
-#if defined(SOCKETPP_OS_WINDOWS)
-        auto n = ::recv(
-            static_cast<SOCKET>(impl_->sock.native_handle()),
-            static_cast<char *>(buf),
-            static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))),
-            flags);
-#else
         auto n = ::recv(static_cast<int>(impl_->sock.native_handle()), buf, len, flags);
-#endif
 
         if (SOCKETPP_UNLIKELY(n < 0))
             return normalize_error(last_socket_error());
 
         return static_cast<size_t>(n);
+#endif
     }
 
     socket_t udp4_peer_socket::native_handle() const noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        return (impl_ && impl_->mux) ? impl_->mux->native_handle() : invalid_socket;
+#else
         return impl_ ? impl_->sock.native_handle() : invalid_socket;
+#endif
     }
 
     bool udp4_peer_socket::is_open() const noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        return impl_ && impl_->mux && !impl_->closed.load(std::memory_order_relaxed);
+#else
         return impl_ && impl_->sock.is_open();
+#endif
     }
 
     // ── udp6_peer_socket ─────────────────────────────────────────────────────────
@@ -267,6 +364,35 @@ namespace socketpp
         const inet6_address &peer,
         const socket_options &opts) noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        auto mux = detail::udp_mux<inet6_address>::get_or_create(local, opts);
+
+        if (!mux)
+            return make_error_code(errc::invalid_state);
+
+        udp6_peer_socket ps;
+        ps.peer_ = peer;
+        ps.impl_ = std::make_unique<impl>();
+        ps.impl_->mux = std::move(mux);
+        ps.impl_->peer_addr = peer;
+
+        auto *raw_impl = ps.impl_.get();
+
+        auto reg_r = ps.impl_->mux->register_peer(
+            peer,
+            [raw_impl](const void *data, size_t len)
+            {
+                std::lock_guard<std::mutex> lk(raw_impl->queue_mutex);
+                raw_impl->recv_queue.emplace_back(
+                    static_cast<const char *>(data), static_cast<const char *>(data) + len);
+                raw_impl->queue_cv.notify_one();
+            });
+
+        if (!reg_r)
+            return reg_r.error();
+
+        return ps;
+#else
         const sock_address local_sa = local;
         const sock_address peer_sa = peer;
 
@@ -280,10 +406,19 @@ namespace socketpp
         ps.impl_->sock = std::move(r.value());
 
         return ps;
+#endif
     }
 
     result<size_t> udp6_peer_socket::send(const void *data, size_t len, int flags) noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        (void)flags;
+
+        if (SOCKETPP_UNLIKELY(!impl_ || !impl_->mux))
+            return make_error_code(errc::invalid_state);
+
+        return impl_->mux->send_to(data, len, impl_->peer_addr);
+#else
         if (SOCKETPP_UNLIKELY(!impl_ || !impl_->sock.is_open()))
             return make_error_code(errc::invalid_state);
 
@@ -291,51 +426,73 @@ namespace socketpp
         flags |= MSG_NOSIGNAL;
 #endif
 
-#if defined(SOCKETPP_OS_WINDOWS)
-        auto n = ::send(
-            static_cast<SOCKET>(impl_->sock.native_handle()),
-            static_cast<const char *>(data),
-            static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))),
-            flags);
-#else
         auto n = ::send(static_cast<int>(impl_->sock.native_handle()), data, len, flags);
-#endif
 
         if (SOCKETPP_UNLIKELY(n < 0))
             return normalize_error(last_socket_error());
 
         return static_cast<size_t>(n);
+#endif
     }
 
     result<size_t> udp6_peer_socket::recv(void *buf, size_t len, int flags) noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        (void)flags;
+
+        if (SOCKETPP_UNLIKELY(!impl_))
+            return make_error_code(errc::invalid_state);
+
+        try
+        {
+            std::unique_lock<std::mutex> lk(impl_->queue_mutex);
+
+            impl_->queue_cv.wait(
+                lk, [this] { return !impl_->recv_queue.empty() || impl_->closed.load(std::memory_order_relaxed); });
+
+            if (impl_->recv_queue.empty())
+                return make_error_code(errc::invalid_state);
+
+            auto &front = impl_->recv_queue.front();
+            auto copy_len = (std::min)(len, front.size());
+            std::memcpy(buf, front.data(), copy_len);
+            impl_->recv_queue.pop_front();
+
+            return copy_len;
+        }
+        catch (...)
+        {
+            return make_error_code(errc::invalid_state);
+        }
+#else
         if (SOCKETPP_UNLIKELY(!impl_ || !impl_->sock.is_open()))
             return make_error_code(errc::invalid_state);
 
-#if defined(SOCKETPP_OS_WINDOWS)
-        auto n = ::recv(
-            static_cast<SOCKET>(impl_->sock.native_handle()),
-            static_cast<char *>(buf),
-            static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))),
-            flags);
-#else
         auto n = ::recv(static_cast<int>(impl_->sock.native_handle()), buf, len, flags);
-#endif
 
         if (SOCKETPP_UNLIKELY(n < 0))
             return normalize_error(last_socket_error());
 
         return static_cast<size_t>(n);
+#endif
     }
 
     socket_t udp6_peer_socket::native_handle() const noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        return (impl_ && impl_->mux) ? impl_->mux->native_handle() : invalid_socket;
+#else
         return impl_ ? impl_->sock.native_handle() : invalid_socket;
+#endif
     }
 
     bool udp6_peer_socket::is_open() const noexcept
     {
+#if defined(SOCKETPP_OS_WINDOWS)
+        return impl_ && impl_->mux && !impl_->closed.load(std::memory_order_relaxed);
+#else
         return impl_ && impl_->sock.is_open();
+#endif
     }
 
 } // namespace socketpp

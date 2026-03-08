@@ -955,11 +955,12 @@ void test_udp_peer_socket_create_and_send()
         CHECK(std::string(buf.data(), recv_r.value()) == msg);
     }
 
-#if !defined(SOCKETPP_OS_WINDOWS)
     auto echo_r = remote.send_to(buf.data(), recv_r.value(), from);
     CHECK_MSG(echo_r, "remote echo send_to failed");
 
+#if !defined(SOCKETPP_OS_WINDOWS)
     wait_readable(peer.native_handle());
+#endif
 
     std::array<char, 256> echo_buf {};
     auto echo_recv = peer.recv(echo_buf.data(), echo_buf.size());
@@ -968,7 +969,6 @@ void test_udp_peer_socket_create_and_send()
     {
         CHECK(std::string(echo_buf.data(), echo_recv.value()) == msg);
     }
-#endif
 
     remote.close();
 }

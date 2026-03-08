@@ -61,6 +61,7 @@
 #include "../platform/spinlock.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -69,6 +70,7 @@
 #include <socketpp/platform/error.hpp>
 #include <socketpp/socket/options.hpp>
 #include <socketpp/socket/socket.hpp>
+#include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -151,11 +153,18 @@ namespace socketpp::detail
             mux->local_addr_ = local_addr;
             registry_.emplace(local_addr, mux);
 
+            mux->poll_thread_ = std::thread([mux]() { mux->poll_loop(); });
+
             return mux;
         }
 
         ~udp_mux()
         {
+            stop_requested_.store(true, std::memory_order_relaxed);
+
+            if (poll_thread_.joinable())
+                poll_thread_.join();
+
             scoped_lock<spinlock> lock(registry_mutex_);
 
             auto it = registry_.find(local_addr_);
@@ -308,6 +317,21 @@ namespace socketpp::detail
       private:
         udp_mux() = default;
 
+        void poll_loop()
+        {
+            WSAPOLLFD pfd {};
+            pfd.fd = static_cast<SOCKET>(socket_.native_handle());
+            pfd.events = POLLIN;
+
+            while (!stop_requested_.load(std::memory_order_relaxed))
+            {
+                auto rc = ::WSAPoll(&pfd, 1, 50);
+
+                if (rc > 0 && (pfd.revents & POLLIN))
+                    on_readable();
+            }
+        }
+
         socket socket_;
         Addr local_addr_;
 
@@ -325,6 +349,9 @@ namespace socketpp::detail
         // 64 KB member buffer for receiving datagrams. Allocated as part of the
         // mux object to avoid large stack frames on each on_readable() call.
         char recv_buf_[65536];
+
+        std::thread poll_thread_;
+        std::atomic<bool> stop_requested_ {false};
 
         // ── Global Registry ──────────────────────────────────────────────────
 
