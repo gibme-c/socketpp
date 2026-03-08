@@ -113,6 +113,17 @@ namespace socketpp
                     effective_opts.exclusive_addr(true);
 #endif
 
+#if defined(SOCKETPP_OS_LINUX) || defined(SOCKETPP_OS_MACOS)
+                // Connected UDP peer sockets (claim path) bind to the same
+                // local address:port as the parent. Both sockets must have
+                // SO_REUSEADDR + SO_REUSEPORT for the kernel to allow this
+                // and route by 4-tuple. macOS enforces this strictly; Linux
+                // is more permissive but setting both is the correct pattern.
+                if (!effective_opts.has_reuse_addr())
+                    effective_opts.reuse_addr(true);
+                effective_opts.reuse_port(true);
+#endif
+
                 auto r = self.socket.open(addr, effective_opts);
 
                 if (!r)
