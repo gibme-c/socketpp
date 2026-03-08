@@ -42,6 +42,10 @@
  * - On stream (listen mode): stops/resumes accepting new connections
  * - On connection: removes/restores readable interest (TCP flow control
  *   throttles the sender when the kernel buffer fills)
+ *
+ * defer()/repeat() schedule one-shot and repeating timers on the event loop;
+ * callbacks fire on the thread pool. post() dispatches a callback through the
+ * event loop to the thread pool (useful for cross-thread wakeups).
  */
 
 #ifndef SOCKETPP_STREAM_HPP
@@ -50,6 +54,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <socketpp/event/timer.hpp>
 #include <socketpp/net/inet4.hpp>
 #include <socketpp/net/inet6.hpp>
 #include <socketpp/platform/error.hpp>
@@ -195,6 +200,40 @@ namespace socketpp
         stream4 &on_error(error_handler handler);
 
         /**
+         * @brief Schedule a one-shot timer.
+         *
+         * The callback fires once on the thread pool after the given delay.
+         * Thread-safe: may be called from any thread.
+         *
+         * @param delay  Time until the callback fires.
+         * @param cb     Callback to invoke.
+         * @return A handle that can cancel the timer.
+         */
+        timer_handle defer(std::chrono::milliseconds delay, std::function<void()> cb);
+
+        /**
+         * @brief Schedule a repeating timer.
+         *
+         * The callback fires on the thread pool at the given interval until
+         * cancelled. Thread-safe: may be called from any thread.
+         *
+         * @param interval Time between successive firings.
+         * @param cb       Callback to invoke.
+         * @return A handle that can cancel the timer.
+         */
+        timer_handle repeat(std::chrono::milliseconds interval, std::function<void()> cb);
+
+        /**
+         * @brief Post a callback for execution on the thread pool.
+         *
+         * The callback is dispatched through the event loop to the thread pool.
+         * Thread-safe: may be called from any thread.
+         *
+         * @param cb Callback to invoke.
+         */
+        void post(std::function<void()> cb);
+
+        /**
          * @brief Pause the stream.
          *
          * In listen mode: stop accepting new connections (kernel backlog
@@ -299,6 +338,15 @@ namespace socketpp
 
         stream6 &on_connect(connect_handler handler);
         stream6 &on_error(error_handler handler);
+
+        /** @brief Schedule a one-shot timer. @see stream4::defer */
+        timer_handle defer(std::chrono::milliseconds delay, std::function<void()> cb);
+
+        /** @brief Schedule a repeating timer. @see stream4::repeat */
+        timer_handle repeat(std::chrono::milliseconds interval, std::function<void()> cb);
+
+        /** @brief Post a callback for execution on the thread pool. @see stream4::post */
+        void post(std::function<void()> cb);
 
         void pause();
         void resume();

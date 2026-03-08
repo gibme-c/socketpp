@@ -45,6 +45,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <future>
 #include <socketpp/dgram.hpp>
 #include <socketpp/event/loop.hpp>
 #include <socketpp/socket/udp.hpp>
@@ -335,6 +336,47 @@ namespace socketpp
                 return r.value();
             }
 
+            /// Schedule a one-shot timer via the event loop; callback fires on thread pool.
+            timer_handle do_defer(std::chrono::milliseconds delay, std::function<void()> cb)
+            {
+                auto p = std::make_shared<std::promise<timer_handle>>();
+                auto f = p->get_future();
+                auto *pp = pool.get();
+
+                loop.post(
+                    [this, delay, cb = std::move(cb), p, pp]() mutable
+                    {
+                        auto h = loop.defer(delay, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        p->set_value(h);
+                    });
+
+                return f.get();
+            }
+
+            /// Schedule a repeating timer via the event loop; callback fires on thread pool.
+            timer_handle do_repeat(std::chrono::milliseconds interval, std::function<void()> cb)
+            {
+                auto p = std::make_shared<std::promise<timer_handle>>();
+                auto f = p->get_future();
+                auto *pp = pool.get();
+
+                loop.post(
+                    [this, interval, cb = std::move(cb), p, pp]() mutable
+                    {
+                        auto h = loop.repeat(interval, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        p->set_value(h);
+                    });
+
+                return f.get();
+            }
+
+            /// Post a callback through the event loop to the thread pool.
+            void do_post(std::function<void()> cb)
+            {
+                auto *pp = pool.get();
+                loop.post([pp, cb = std::move(cb)]() { pp->submit(cb); });
+            }
+
             /// Shutdown sequence: stop loop, join thread, close socket, shutdown pool.
             ///
             /// Uses post() to send the stop signal INSIDE the event loop. This
@@ -437,6 +479,21 @@ namespace socketpp
         return impl_->do_send_batch(msgs);
     }
 
+    timer_handle dgram4::defer(std::chrono::milliseconds delay, std::function<void()> cb)
+    {
+        return impl_->do_defer(delay, std::move(cb));
+    }
+
+    timer_handle dgram4::repeat(std::chrono::milliseconds interval, std::function<void()> cb)
+    {
+        return impl_->do_repeat(interval, std::move(cb));
+    }
+
+    void dgram4::post(std::function<void()> cb)
+    {
+        impl_->do_post(std::move(cb));
+    }
+
     inet4_address dgram4::local_addr() const
     {
         return impl_->do_local_addr();
@@ -511,6 +568,21 @@ namespace socketpp
     result<int> dgram6::send_batch(span<const dgram6_send_entry> msgs)
     {
         return impl_->do_send_batch(msgs);
+    }
+
+    timer_handle dgram6::defer(std::chrono::milliseconds delay, std::function<void()> cb)
+    {
+        return impl_->do_defer(delay, std::move(cb));
+    }
+
+    timer_handle dgram6::repeat(std::chrono::milliseconds interval, std::function<void()> cb)
+    {
+        return impl_->do_repeat(interval, std::move(cb));
+    }
+
+    void dgram6::post(std::function<void()> cb)
+    {
+        impl_->do_post(std::move(cb));
     }
 
     inet6_address dgram6::local_addr() const

@@ -938,6 +938,220 @@ void test_dgram4_batch_roundtrip()
 }
 
 // ===========================================================================
+// dgram4 defer (one-shot timer)
+// ===========================================================================
+
+void test_dgram4_defer()
+{
+    auto r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "create failed");
+    if (!r)
+        return;
+
+    auto &d = r.value();
+    std::atomic<bool> fired {false};
+    auto start = std::chrono::steady_clock::now();
+
+    auto h = d.defer(std::chrono::milliseconds(50), [&fired]() { fired.store(true, std::memory_order_relaxed); });
+
+    CHECK_MSG(h, "defer should return valid handle");
+    auto ok = wait_for(fired, 3000);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    CHECK_MSG(ok, "defer callback should fire");
+    CHECK_MSG(elapsed >= std::chrono::milliseconds(40), "should not fire too early");
+    CHECK_MSG(elapsed < std::chrono::milliseconds(2000), "should not fire too late");
+}
+
+// ===========================================================================
+// dgram4 repeat (repeating timer)
+// ===========================================================================
+
+void test_dgram4_repeat()
+{
+    auto r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "create failed");
+    if (!r)
+        return;
+
+    auto &d = r.value();
+    std::atomic<int> count {0};
+
+    auto h = d.repeat(std::chrono::milliseconds(30), [&count]() { count.fetch_add(1, std::memory_order_relaxed); });
+
+    CHECK_MSG(h, "repeat should return valid handle");
+
+    auto ok = wait_for_count(count, 3, 3000);
+    CHECK_MSG(ok, "repeat callback should fire at least 3 times");
+
+    h.cancel();
+    platform_sleep_ms(100);
+
+    int after_cancel = count.load(std::memory_order_relaxed);
+    platform_sleep_ms(200);
+
+    int after_wait = count.load(std::memory_order_relaxed);
+    CHECK_MSG(after_wait - after_cancel <= 1, "timer should stop after cancel");
+}
+
+// ===========================================================================
+// dgram4 defer cancel (cancelled one-shot never fires)
+// ===========================================================================
+
+void test_dgram4_defer_cancel()
+{
+    auto r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "create failed");
+    if (!r)
+        return;
+
+    auto &d = r.value();
+    std::atomic<bool> fired {false};
+
+    auto h = d.defer(std::chrono::milliseconds(200), [&fired]() { fired.store(true, std::memory_order_relaxed); });
+
+    h.cancel();
+    platform_sleep_ms(500);
+
+    CHECK_MSG(!fired.load(), "cancelled defer should not fire");
+}
+
+// ===========================================================================
+// dgram4 post
+// ===========================================================================
+
+void test_dgram4_post()
+{
+    auto r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "create failed");
+    if (!r)
+        return;
+
+    auto &d = r.value();
+    std::atomic<bool> fired {false};
+    auto main_tid = std::this_thread::get_id();
+    std::atomic<bool> different_thread {false};
+
+    d.post(
+        [&fired, &different_thread, main_tid]()
+        {
+            different_thread.store(std::this_thread::get_id() != main_tid, std::memory_order_relaxed);
+            fired.store(true, std::memory_order_relaxed);
+        });
+
+    auto ok = wait_for(fired, 3000);
+    CHECK_MSG(ok, "post callback should fire");
+    CHECK_MSG(different_thread.load(), "post callback should run on thread pool, not main thread");
+}
+
+// ===========================================================================
+// stream4 defer (one-shot timer)
+// ===========================================================================
+
+void test_stream4_defer()
+{
+    auto r = socketpp::stream4::listen(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "listen failed");
+    if (!r)
+        return;
+
+    auto &s = r.value();
+    std::atomic<bool> fired {false};
+    auto start = std::chrono::steady_clock::now();
+
+    auto h = s.defer(std::chrono::milliseconds(50), [&fired]() { fired.store(true, std::memory_order_relaxed); });
+
+    CHECK_MSG(h, "defer should return valid handle");
+    auto ok = wait_for(fired, 3000);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    CHECK_MSG(ok, "defer callback should fire");
+    CHECK_MSG(elapsed >= std::chrono::milliseconds(40), "should not fire too early");
+    CHECK_MSG(elapsed < std::chrono::milliseconds(2000), "should not fire too late");
+}
+
+// ===========================================================================
+// stream4 repeat (repeating timer)
+// ===========================================================================
+
+void test_stream4_repeat()
+{
+    auto r = socketpp::stream4::listen(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "listen failed");
+    if (!r)
+        return;
+
+    auto &s = r.value();
+    std::atomic<int> count {0};
+
+    auto h = s.repeat(std::chrono::milliseconds(30), [&count]() { count.fetch_add(1, std::memory_order_relaxed); });
+
+    CHECK_MSG(h, "repeat should return valid handle");
+
+    auto ok = wait_for_count(count, 3, 3000);
+    CHECK_MSG(ok, "repeat callback should fire at least 3 times");
+
+    h.cancel();
+    platform_sleep_ms(100);
+
+    int after_cancel = count.load(std::memory_order_relaxed);
+    platform_sleep_ms(200);
+
+    int after_wait = count.load(std::memory_order_relaxed);
+    CHECK_MSG(after_wait - after_cancel <= 1, "timer should stop after cancel");
+}
+
+// ===========================================================================
+// stream4 defer cancel (cancelled one-shot never fires)
+// ===========================================================================
+
+void test_stream4_defer_cancel()
+{
+    auto r = socketpp::stream4::listen(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "listen failed");
+    if (!r)
+        return;
+
+    auto &s = r.value();
+    std::atomic<bool> fired {false};
+
+    auto h = s.defer(std::chrono::milliseconds(200), [&fired]() { fired.store(true, std::memory_order_relaxed); });
+
+    h.cancel();
+    platform_sleep_ms(500);
+
+    CHECK_MSG(!fired.load(), "cancelled defer should not fire");
+}
+
+// ===========================================================================
+// stream4 post
+// ===========================================================================
+
+void test_stream4_post()
+{
+    auto r = socketpp::stream4::listen(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(r, "listen failed");
+    if (!r)
+        return;
+
+    auto &s = r.value();
+    std::atomic<bool> fired {false};
+    auto main_tid = std::this_thread::get_id();
+    std::atomic<bool> different_thread {false};
+
+    s.post(
+        [&fired, &different_thread, main_tid]()
+        {
+            different_thread.store(std::this_thread::get_id() != main_tid, std::memory_order_relaxed);
+            fired.store(true, std::memory_order_relaxed);
+        });
+
+    auto ok = wait_for(fired, 3000);
+    CHECK_MSG(ok, "post callback should fire");
+    CHECK_MSG(different_thread.load(), "post callback should run on thread pool, not main thread");
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -986,6 +1200,30 @@ int main()
 
     std::cerr << "\n--- dgram batch roundtrip ---\n";
     RUN_TEST(test_dgram4_batch_roundtrip);
+
+    std::cerr << "\n--- dgram4 defer ---\n";
+    RUN_TEST(test_dgram4_defer);
+
+    std::cerr << "\n--- dgram4 repeat ---\n";
+    RUN_TEST(test_dgram4_repeat);
+
+    std::cerr << "\n--- dgram4 defer cancel ---\n";
+    RUN_TEST(test_dgram4_defer_cancel);
+
+    std::cerr << "\n--- dgram4 post ---\n";
+    RUN_TEST(test_dgram4_post);
+
+    std::cerr << "\n--- stream4 defer ---\n";
+    RUN_TEST(test_stream4_defer);
+
+    std::cerr << "\n--- stream4 repeat ---\n";
+    RUN_TEST(test_stream4_repeat);
+
+    std::cerr << "\n--- stream4 defer cancel ---\n";
+    RUN_TEST(test_stream4_defer_cancel);
+
+    std::cerr << "\n--- stream4 post ---\n";
+    RUN_TEST(test_stream4_post);
 
     std::cerr << "\n" << g_test_count << " checks, " << g_fail_count << " failures\n";
     return g_fail_count > 0 ? 1 : 0;

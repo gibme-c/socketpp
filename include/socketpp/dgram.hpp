@@ -41,15 +41,21 @@
  * event loop. During pause, the kernel buffer absorbs data; for UDP, datagrams
  * are silently dropped when the kernel buffer fills (expected behavior).
  *
- * @note All callbacks (on_data, on_error) run on the thread pool, never on
- *       the event loop thread.
+ * defer()/repeat() schedule one-shot and repeating timers on the event loop;
+ * callbacks fire on the thread pool. post() dispatches a callback through the
+ * event loop to the thread pool (useful for cross-thread wakeups).
+ *
+ * @note All callbacks (on_data, on_error, timer, post) run on the thread pool,
+ *       never on the event loop thread.
  */
 
 #ifndef SOCKETPP_DGRAM_HPP
 #define SOCKETPP_DGRAM_HPP
 
+#include <chrono>
 #include <functional>
 #include <memory>
+#include <socketpp/event/timer.hpp>
 #include <socketpp/net/inet4.hpp>
 #include <socketpp/net/inet6.hpp>
 #include <socketpp/platform/error.hpp>
@@ -215,6 +221,40 @@ namespace socketpp
         result<int> send_batch(span<const dgram4_send_entry> msgs);
 
         /**
+         * @brief Schedule a one-shot timer.
+         *
+         * The callback fires once on the thread pool after the given delay.
+         * Thread-safe: may be called from any thread.
+         *
+         * @param delay  Time until the callback fires.
+         * @param cb     Callback to invoke.
+         * @return A handle that can cancel the timer.
+         */
+        timer_handle defer(std::chrono::milliseconds delay, std::function<void()> cb);
+
+        /**
+         * @brief Schedule a repeating timer.
+         *
+         * The callback fires on the thread pool at the given interval until
+         * cancelled. Thread-safe: may be called from any thread.
+         *
+         * @param interval Time between successive firings.
+         * @param cb       Callback to invoke.
+         * @return A handle that can cancel the timer.
+         */
+        timer_handle repeat(std::chrono::milliseconds interval, std::function<void()> cb);
+
+        /**
+         * @brief Post a callback for execution on the thread pool.
+         *
+         * The callback is dispatched through the event loop to the thread pool.
+         * Thread-safe: may be called from any thread.
+         *
+         * @param cb Callback to invoke.
+         */
+        void post(std::function<void()> cb);
+
+        /**
          * @brief Get the local address the socket is bound to.
          * @return The bound address, including the actual port if 0 was used.
          */
@@ -299,6 +339,15 @@ namespace socketpp
          * @return Number of messages sent, or an error code.
          */
         result<int> send_batch(span<const dgram6_send_entry> msgs);
+
+        /** @brief Schedule a one-shot timer. @see dgram4::defer */
+        timer_handle defer(std::chrono::milliseconds delay, std::function<void()> cb);
+
+        /** @brief Schedule a repeating timer. @see dgram4::repeat */
+        timer_handle repeat(std::chrono::milliseconds interval, std::function<void()> cb);
+
+        /** @brief Post a callback for execution on the thread pool. @see dgram4::post */
+        void post(std::function<void()> cb);
 
         /** @brief Get the local address the socket is bound to. */
         inet6_address local_addr() const;
