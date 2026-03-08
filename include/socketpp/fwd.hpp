@@ -89,6 +89,8 @@ namespace socketpp
     struct dgram6_message;
     class dgram4;
     class dgram6;
+    class dgram4_peer;
+    class dgram6_peer;
 
 } // namespace socketpp
 

@@ -44,7 +44,7 @@ namespace socketpp
         static result<udp4_peer_socket>
             create(const inet4_address &local, const inet4_address &peer, const socket_options &opts = {}) noexcept;
 
-        udp4_peer_socket() noexcept = default;
+        udp4_peer_socket() noexcept;
         ~udp4_peer_socket() noexcept;
 
         udp4_peer_socket(udp4_peer_socket &&other) noexcept;
@@ -82,7 +82,7 @@ namespace socketpp
         static result<udp6_peer_socket>
             create(const inet6_address &local, const inet6_address &peer, const socket_options &opts = {}) noexcept;
 
-        udp6_peer_socket() noexcept = default;
+        udp6_peer_socket() noexcept;
         ~udp6_peer_socket() noexcept;
 
         udp6_peer_socket(udp6_peer_socket &&other) noexcept;

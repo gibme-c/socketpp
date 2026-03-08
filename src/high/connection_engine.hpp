@@ -51,6 +51,7 @@
 #ifndef SOCKETPP_DETAIL_CONNECTION_ENGINE_HPP
 #define SOCKETPP_DETAIL_CONNECTION_ENGINE_HPP
 
+#include "serial_queue.hpp"
 #include "thread_pool.hpp"
 
 #include <atomic>
@@ -84,6 +85,7 @@ namespace socketpp::detail
         Address local_; ///< Local address, captured at accept/connect time.
         event_loop *loop_; ///< The event loop driving this connection's I/O.
         thread_pool *pool_; ///< Thread pool for dispatching user callbacks.
+        serial_queue serial_; ///< Serializes user callbacks for this connection.
 
         std::vector<char> read_buf_; ///< Per-connection read buffer.
 
@@ -117,6 +119,7 @@ namespace socketpp::detail
             local_(local),
             loop_(&loop),
             pool_(&pool),
+            serial_(&pool),
             max_write_queue_bytes_(max_write_bytes)
         {
             read_buf_.resize(read_buf_size);
@@ -206,7 +209,7 @@ namespace socketpp::detail
                     auto data = std::vector<char>(read_buf_.data(), read_buf_.data() + n);
                     auto self = this->shared_from_this();
 
-                    pool_->submit([self, d = std::move(data)]() { self->on_data_(d.data(), d.size()); });
+                    serial_.submit([self, d = std::move(data)]() { self->on_data_(d.data(), d.size()); });
                 }
             }
 
@@ -359,7 +362,7 @@ namespace socketpp::detail
             if (on_close_)
             {
                 auto self = this->shared_from_this();
-                pool_->submit([self]() { self->on_close_(); });
+                serial_.submit([self]() { self->on_close_(); });
             }
         }
 

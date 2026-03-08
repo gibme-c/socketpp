@@ -33,6 +33,7 @@
  * races between factory return and callback setup.
  */
 
+#include "serial_queue.hpp"
 #include "stream_connection_impl.hpp"
 
 #include <cstring>
@@ -64,6 +65,7 @@ namespace socketpp
 
             event_loop loop;
             std::unique_ptr<detail::thread_pool> pool;
+            std::unique_ptr<detail::serial_queue> serial; ///< Serializes container-level timer/post callbacks.
 
             stream_mode mode_;
 
@@ -116,6 +118,7 @@ namespace socketpp
                     return r;
 
                 self.pool = std::make_unique<detail::thread_pool>(config.worker_threads);
+                self.serial = std::make_unique<detail::serial_queue>(self.pool.get());
 
                 // Start event loop but don't arm accept loop yet
                 self.background_thread = std::thread([&self]() { self.loop.run(); });
@@ -135,6 +138,7 @@ namespace socketpp
                 self.sock_opts = config.sock_opts;
 
                 self.pool = std::make_unique<detail::thread_pool>(config.worker_threads);
+                self.serial = std::make_unique<detail::serial_queue>(self.pool.get());
 
                 // Start event loop but don't initiate connection yet
                 self.background_thread = std::thread([&self]() { self.loop.run(); });
@@ -440,12 +444,12 @@ namespace socketpp
             {
                 auto p = std::make_shared<std::promise<timer_handle>>();
                 auto f = p->get_future();
-                auto *pp = pool.get();
+                auto *sq = serial.get();
 
                 loop.post(
-                    [this, delay, cb = std::move(cb), p, pp]() mutable
+                    [this, delay, cb = std::move(cb), p, sq]() mutable
                     {
-                        auto h = loop.defer(delay, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        auto h = loop.defer(delay, [sq, cb = std::move(cb)]() { sq->submit(cb); });
                         p->set_value(h);
                     });
 
@@ -456,12 +460,12 @@ namespace socketpp
             {
                 auto p = std::make_shared<std::promise<timer_handle>>();
                 auto f = p->get_future();
-                auto *pp = pool.get();
+                auto *sq = serial.get();
 
                 loop.post(
-                    [this, interval, cb = std::move(cb), p, pp]() mutable
+                    [this, interval, cb = std::move(cb), p, sq]() mutable
                     {
-                        auto h = loop.repeat(interval, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        auto h = loop.repeat(interval, [sq, cb = std::move(cb)]() { sq->submit(cb); });
                         p->set_value(h);
                     });
 
@@ -470,8 +474,8 @@ namespace socketpp
 
             void do_post(std::function<void()> cb)
             {
-                auto *pp = pool.get();
-                loop.post([pp, cb = std::move(cb)]() { pp->submit(cb); });
+                auto *sq = serial.get();
+                loop.post([sq, cb = std::move(cb)]() { sq->submit(cb); });
             }
 
             // ── Destroy ─────────────────────────────────────────────────────

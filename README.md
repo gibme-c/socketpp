@@ -13,6 +13,8 @@ Both IPv4 and IPv6 are first-class citizens. Every type has separate IPv4 and IP
 - **Native event backends** -- epoll (Linux), kqueue (macOS), IOCP (Windows); selected at compile time
 - **RAII lifecycle** -- factory methods open sockets and start the event loop; destructors clean everything up; no `start()`/`stop()`/`run()` needed
 - **Flow control** -- `pause()`/`resume()` on streams, connections, and datagrams backed by kernel buffers
+- **Serialized execution** -- all callbacks for a given handle run serially (at most one at a time), eliminating the need for user-side locking within callbacks
+- **Per-peer UDP handles** -- `dgram4::claim()` / `dgram6::claim()` captures traffic from a specific peer into a dedicated `dgram4_peer` / `dgram6_peer` handle with its own serialized callback queue
 - **Timers and dispatch** -- `defer()` for one-shot timers, `repeat()` for recurring timers, `post()` for cross-thread dispatch; all callbacks run on the thread pool
 - **Thread pool dispatch** -- all user callbacks run on a worker pool (defaults to hardware concurrency, minimum 2)
 - **Portable error handling** -- `result<T>` return type with `socketpp::errc` codes that normalize platform-specific socket errors
@@ -63,7 +65,7 @@ Include the umbrella header:
 #include <socketpp.hpp>
 ```
 
-This provides the full high-level API: `stream4`, `stream6`, `dgram4`, `dgram6`, address types (`inet4_address`, `inet6_address`), `socket_options`, `timer_handle`, `result<T>`, and error codes.
+This provides the full high-level API: `stream4`, `stream6`, `dgram4`, `dgram6`, `dgram4_peer`, `dgram6_peer`, address types (`inet4_address`, `inet6_address`), `socket_options`, `timer_handle`, `result<T>`, and error codes.
 
 ### TCP Echo Server
 
@@ -371,6 +373,56 @@ sock.post([] {
 
 All timer and post callbacks run on the thread pool, never on the event loop thread.
 
+### dgram4_peer / dgram6_peer (Per-Peer UDP)
+
+`dgram4::claim()` carves out a dedicated handle for traffic from a specific peer address. Once claimed, datagrams from that peer are routed to the peer handle's `on_data` callback instead of the parent's. Each peer handle has its own serialized execution queue.
+
+```cpp
+auto r = socketpp::dgram4::create(socketpp::inet4_address::any(9001));
+if (!r) { /* handle error */ return 1; }
+
+auto server = std::move(r.value());
+
+server.on_data([&server](const char *data, size_t len, const socketpp::inet4_address &from) {
+    // Unclaimed traffic arrives here. Claim this peer on first contact.
+    auto pr = server.claim(from);
+    if (!pr) { /* handle error -- e.g. errc::address_in_use if already claimed */ return; }
+
+    auto peer = std::move(pr.value());
+
+    peer.on_data([](const char *data, size_t len) {
+        // No source address parameter -- it's fixed (available via peer_addr())
+        std::cout << "peer data: " << std::string(data, len) << "\n";
+    });
+
+    peer.on_error([](std::error_code ec) {
+        std::cerr << "peer error: " << ec.message() << "\n";
+    });
+});
+```
+
+**Peer handle API:**
+
+```cpp
+peer.send(data, len);          // send to the claimed peer
+peer.send_batch(entries);      // batch send to the claimed peer
+peer.peer_addr();              // the claimed address
+peer.is_open();                // whether the peer is still claimed
+
+// Timer/dispatch (same as dgram4)
+peer.defer(std::chrono::milliseconds(100), [] { /* one-shot */ });
+peer.repeat(std::chrono::seconds(1), [] { /* recurring */ });
+peer.post([] { /* fire-and-forget */ });
+
+// Release the claim -- traffic returns to parent's on_data
+peer.relinquish();
+// Or let the destructor do it (RAII)
+```
+
+`claim()` is thread-safe and can be called from any thread, including from inside `on_data` callbacks. Double-claiming the same address returns `errc::address_in_use`. When a peer handle is destroyed or `relinquish()` is called, traffic from that address flows back to the parent's `on_data` callback.
+
+On Linux and macOS, claimed peers use kernel 4-tuple demux via connected UDP sockets. On Windows, the parent's recv loop performs in-process routing to the claimed peer handle.
+
 ### Addresses
 
 `inet4_address` and `inet6_address` are value types representing socket endpoints. Both are hashable, comparable, and printable.
@@ -440,6 +492,7 @@ TCP connections are reference-counted internally (`shared_ptr` + `enable_shared_
 - **Event loop thread** -- one per high-level object, handles I/O multiplexing only
 - **Thread pool** -- configurable via `worker_threads` in config structs, defaults to `std::thread::hardware_concurrency()` (minimum 2); all user callbacks execute here
 - **`send()` thread safety** -- write data can be queued from any thread; the event loop picks it up on the next writable notification
+- **Serialized execution** -- all callbacks for a given handle (`stream4::connection`, `dgram4`, `dgram6`, `dgram4_peer`, `dgram6_peer`) execute serially -- at most one callback at a time per handle. This means `on_data`, `on_error`, `on_close`, `on_connect`, timer, and `post()` callbacks for the same handle will never overlap, so no user-side locking is needed within callbacks. Different handles may run callbacks concurrently with each other
 
 ### Callback Arming
 
@@ -453,7 +506,7 @@ Build with `-DSOCKETPP_BUILD_TESTS=ON` to get the test executables:
 ./build/tests           # all platforms and compilers
 ```
 
-The test suite includes low-level socket tests, event loop integration tests, and high-level API tests covering TCP streams, UDP datagrams with round-trip verification, batch send/recv, pause/resume flow control, timers, cross-thread dispatch, and concurrent access patterns.
+The test suite includes low-level socket tests, event loop integration tests, and high-level API tests covering TCP streams, UDP datagrams with round-trip verification, batch send/recv, per-peer claim/relinquish, pause/resume flow control, timers, cross-thread dispatch, serialized execution guarantees, and concurrent access patterns.
 
 ## License
 

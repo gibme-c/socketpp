@@ -55,6 +55,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <socketpp/dgram_peer.hpp>
 #include <socketpp/event/timer.hpp>
 #include <socketpp/net/inet4.hpp>
 #include <socketpp/net/inet6.hpp>
@@ -221,6 +222,24 @@ namespace socketpp
         result<int> send_batch(span<const dgram4_send_entry> msgs);
 
         /**
+         * @brief Claim traffic from a specific peer address.
+         *
+         * Returns a dgram4_peer handle that captures all datagrams from the
+         * given peer. The parent's on_data callback will no longer fire for
+         * this peer. Each peer handle has its own serialized execution queue.
+         *
+         * On Linux/macOS: creates a connected UDP socket for kernel 4-tuple demux.
+         * On Windows: routes traffic in-process from the parent's recv loop.
+         *
+         * Thread-safe: may be called from any thread, including on_data callbacks.
+         *
+         * @param peer_addr The peer address to claim.
+         * @return result<dgram4_peer> on success, or errc::address_in_use if
+         *         the peer is already claimed.
+         */
+        result<dgram4_peer> claim(const inet4_address &peer_addr);
+
+        /**
          * @brief Schedule a one-shot timer.
          *
          * The callback fires once on the thread pool after the given delay.
@@ -339,6 +358,12 @@ namespace socketpp
          * @return Number of messages sent, or an error code.
          */
         result<int> send_batch(span<const dgram6_send_entry> msgs);
+
+        /**
+         * @brief Claim traffic from a specific peer address.
+         * @see dgram4::claim for full documentation.
+         */
+        result<dgram6_peer> claim(const inet6_address &peer_addr);
 
         /** @brief Schedule a one-shot timer. @see dgram4::defer */
         timer_handle defer(std::chrono::milliseconds delay, std::function<void()> cb);

@@ -1152,6 +1152,311 @@ void test_stream4_post()
 }
 
 // ===========================================================================
+// dgram4 claim — peer receives, main on_data does not
+// ===========================================================================
+
+void test_dgram4_claim_basic()
+{
+    const uint16_t server_port = 19888;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(server_port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+    auto client_addr = client.local_addr();
+
+    // Claim the client's address on the server side
+    auto peer_r = server.claim(client_addr);
+    CHECK_MSG(peer_r, "claim should succeed");
+    if (!peer_r)
+        return;
+
+    auto peer = std::move(peer_r.value());
+    CHECK(peer.is_open());
+    CHECK(peer.peer_addr().port() == client_addr.port());
+
+    std::atomic<int> peer_recv_count {0};
+    std::atomic<int> main_recv_count {0};
+
+    peer.on_data([&peer_recv_count](const char *, size_t) { peer_recv_count.fetch_add(1, std::memory_order_relaxed); });
+
+    server.on_data([&main_recv_count](const char *, size_t, const socketpp::inet4_address &)
+                   { main_recv_count.fetch_add(1, std::memory_order_relaxed); });
+
+    platform_sleep_ms(100);
+
+    // Send from the claimed client address to server
+    const std::string msg = "from-claimed";
+    client.send_to(msg.data(), msg.size(), socketpp::inet4_address::loopback(server_port));
+
+    auto ok = wait_for_count(peer_recv_count, 1, 5000);
+    CHECK_MSG(ok, "peer handle should receive datagram from claimed address");
+
+    platform_sleep_ms(100);
+    CHECK_MSG(main_recv_count.load() == 0, "main on_data should NOT fire for claimed peer");
+}
+
+// ===========================================================================
+// dgram4 claim — double claim returns error
+// ===========================================================================
+
+void test_dgram4_double_claim()
+{
+    const uint16_t port = 19889;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+    auto peer_addr = socketpp::inet4_address::loopback(12345);
+
+    auto p1 = server.claim(peer_addr);
+    CHECK_MSG(p1, "first claim should succeed");
+
+    auto p2 = server.claim(peer_addr);
+    CHECK_MSG(!p2, "second claim of same address should fail");
+}
+
+// ===========================================================================
+// dgram4 relinquish — traffic returns to main on_data
+// ===========================================================================
+
+void test_dgram4_relinquish()
+{
+    const uint16_t server_port = 19890;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(server_port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+    auto client_addr = client.local_addr();
+
+    std::atomic<int> peer_recv_count {0};
+    std::atomic<int> main_recv_count {0};
+
+    // Claim, receive on peer, then relinquish
+    auto peer_r = server.claim(client_addr);
+    CHECK_MSG(peer_r, "claim should succeed");
+    if (!peer_r)
+        return;
+
+    auto peer = std::move(peer_r.value());
+    peer.on_data([&peer_recv_count](const char *, size_t) { peer_recv_count.fetch_add(1, std::memory_order_relaxed); });
+
+    server.on_data([&main_recv_count](const char *, size_t, const socketpp::inet4_address &)
+                   { main_recv_count.fetch_add(1, std::memory_order_relaxed); });
+
+    platform_sleep_ms(100);
+
+    // Send while claimed — peer should get it
+    const std::string msg = "before-relinquish";
+    client.send_to(msg.data(), msg.size(), socketpp::inet4_address::loopback(server_port));
+
+    wait_for_count(peer_recv_count, 1, 5000);
+    CHECK_MSG(peer_recv_count.load() >= 1, "peer should receive before relinquish");
+
+    // Relinquish
+    peer.relinquish();
+    CHECK(!peer.is_open());
+    platform_sleep_ms(200);
+
+    // Send again — should go to main on_data
+    const std::string msg2 = "after-relinquish";
+    client.send_to(msg2.data(), msg2.size(), socketpp::inet4_address::loopback(server_port));
+
+    auto ok = wait_for_count(main_recv_count, 1, 5000);
+    CHECK_MSG(ok, "main on_data should receive after relinquish");
+}
+
+// ===========================================================================
+// dgram4 destructor auto-relinquish
+// ===========================================================================
+
+void test_dgram4_destructor_relinquish()
+{
+    const uint16_t server_port = 19891;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(server_port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+    auto client_addr = client.local_addr();
+
+    std::atomic<int> main_recv_count {0};
+
+    server.on_data([&main_recv_count](const char *, size_t, const socketpp::inet4_address &)
+                   { main_recv_count.fetch_add(1, std::memory_order_relaxed); });
+
+    // Claim then let peer go out of scope
+    {
+        auto peer_r = server.claim(client_addr);
+        CHECK_MSG(peer_r, "claim should succeed");
+        if (!peer_r)
+            return;
+
+        auto peer = std::move(peer_r.value());
+        peer.on_data([](const char *, size_t) {});
+        platform_sleep_ms(100);
+        // peer destructor calls relinquish()
+    }
+
+    platform_sleep_ms(200);
+
+    // Send — should go to main on_data since peer was destroyed
+    const std::string msg = "after-destroy";
+    client.send_to(msg.data(), msg.size(), socketpp::inet4_address::loopback(server_port));
+
+    auto ok = wait_for_count(main_recv_count, 1, 5000);
+    CHECK_MSG(ok, "main on_data should receive after peer destructor");
+}
+
+// ===========================================================================
+// dgram4 peer send
+// ===========================================================================
+
+void test_dgram4_peer_send()
+{
+    const uint16_t server_port = 19892;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(server_port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+
+    auto client_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(0));
+    CHECK_MSG(client_r, "client create failed");
+    if (!client_r)
+        return;
+
+    auto client = std::move(client_r.value());
+    auto client_addr = client.local_addr();
+
+    std::atomic<bool> client_recv {false};
+    std::string received_data;
+    std::mutex recv_mutex;
+
+    client.on_data(
+        [&](const char *data, size_t len, const socketpp::inet4_address &)
+        {
+            std::lock_guard<std::mutex> lock(recv_mutex);
+            received_data.assign(data, len);
+            client_recv.store(true, std::memory_order_relaxed);
+        });
+
+    // Claim and send through peer handle
+    auto peer_r = server.claim(client_addr);
+    CHECK_MSG(peer_r, "claim should succeed");
+    if (!peer_r)
+        return;
+
+    auto peer = std::move(peer_r.value());
+    peer.on_data([](const char *, size_t) {});
+    platform_sleep_ms(100);
+
+    const std::string msg = "from-peer-handle";
+    bool sent = peer.send(msg.data(), msg.size());
+    CHECK_MSG(sent, "peer send should succeed");
+
+    auto ok = wait_for(client_recv, 5000);
+    CHECK_MSG(ok, "client should receive datagram from peer handle");
+
+    if (ok)
+    {
+        std::lock_guard<std::mutex> lock(recv_mutex);
+        CHECK(received_data == msg);
+    }
+}
+
+// ===========================================================================
+// dgram4 peer timer/post
+// ===========================================================================
+
+void test_dgram4_peer_timer_post()
+{
+    const uint16_t port = 19893;
+
+    auto server_r = socketpp::dgram4::create(socketpp::inet4_address::loopback(port));
+    if (!server_r)
+    {
+        std::cerr << "(port in use, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(server_r.value());
+    auto peer_addr = socketpp::inet4_address::loopback(55555);
+
+    auto peer_r = server.claim(peer_addr);
+    CHECK_MSG(peer_r, "claim should succeed");
+    if (!peer_r)
+        return;
+
+    auto peer = std::move(peer_r.value());
+
+    // Test defer on peer
+    std::atomic<bool> defer_fired {false};
+    auto h = peer.defer(
+        std::chrono::milliseconds(50), [&defer_fired]() { defer_fired.store(true, std::memory_order_relaxed); });
+    CHECK_MSG(h, "peer defer should return valid handle");
+
+    auto ok = wait_for(defer_fired, 3000);
+    CHECK_MSG(ok, "peer defer callback should fire");
+
+    // Test post on peer
+    std::atomic<bool> post_fired {false};
+    peer.post([&post_fired]() { post_fired.store(true, std::memory_order_relaxed); });
+
+    ok = wait_for(post_fired, 3000);
+    CHECK_MSG(ok, "peer post callback should fire");
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -1224,6 +1529,24 @@ int main()
 
     std::cerr << "\n--- stream4 post ---\n";
     RUN_TEST(test_stream4_post);
+
+    std::cerr << "\n--- dgram4 claim basic ---\n";
+    RUN_TEST(test_dgram4_claim_basic);
+
+    std::cerr << "\n--- dgram4 double claim ---\n";
+    RUN_TEST(test_dgram4_double_claim);
+
+    std::cerr << "\n--- dgram4 relinquish ---\n";
+    RUN_TEST(test_dgram4_relinquish);
+
+    std::cerr << "\n--- dgram4 destructor relinquish ---\n";
+    RUN_TEST(test_dgram4_destructor_relinquish);
+
+    std::cerr << "\n--- dgram4 peer send ---\n";
+    RUN_TEST(test_dgram4_peer_send);
+
+    std::cerr << "\n--- dgram4 peer timer/post ---\n";
+    RUN_TEST(test_dgram4_peer_timer_post);
 
     std::cerr << "\n" << g_test_count << " checks, " << g_fail_count << " failures\n";
     return g_fail_count > 0 ? 1 : 0;

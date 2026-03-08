@@ -185,6 +185,7 @@ namespace socketpp
 
     // ── udp4_peer_socket ─────────────────────────────────────────────────────────
 
+    udp4_peer_socket::udp4_peer_socket() noexcept = default;
     udp4_peer_socket::~udp4_peer_socket() noexcept = default;
 
     udp4_peer_socket::udp4_peer_socket(udp4_peer_socket &&other) noexcept:
@@ -341,6 +342,7 @@ namespace socketpp
 
     // ── udp6_peer_socket ─────────────────────────────────────────────────────────
 
+    udp6_peer_socket::udp6_peer_socket() noexcept = default;
     udp6_peer_socket::~udp6_peer_socket() noexcept = default;
 
     udp6_peer_socket::udp6_peer_socket(udp6_peer_socket &&other) noexcept:

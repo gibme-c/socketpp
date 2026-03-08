@@ -205,6 +205,7 @@ add_library(socketpp STATIC
     src/high/thread_pool.cpp
     src/high/stream.cpp
     src/high/dgram.cpp
+    src/high/dgram_peer.cpp
 )
 
 # Platform-specific backend sources

@@ -41,6 +41,8 @@
  */
 
 #include "../platform/detect_internal.hpp"
+#include "dgram_peer_impl.hpp"
+#include "serial_queue.hpp"
 #include "thread_pool.hpp"
 
 #include <atomic>
@@ -49,7 +51,9 @@
 #include <socketpp/dgram.hpp>
 #include <socketpp/event/loop.hpp>
 #include <socketpp/socket/udp.hpp>
+#include <socketpp/socket/udp_peer.hpp>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace socketpp
@@ -60,11 +64,21 @@ namespace socketpp
     namespace
     {
 
-        template<typename DgramType, typename Socket, typename Address, typename SendEntry, typename Message>
+        template<
+            typename DgramType,
+            typename PeerType,
+            typename Socket,
+            typename PeerSocket,
+            typename Address,
+            typename SendEntry,
+            typename Message>
         struct dgram_impl
         {
+            using peer_impl_type = detail::dgram_peer_impl<PeerType, Address, Socket, PeerSocket, SendEntry>;
+
             event_loop loop;
             std::unique_ptr<detail::thread_pool> pool;
+            std::unique_ptr<detail::serial_queue> serial; ///< Serializes user callbacks for this dgram.
             Socket socket;
 
             typename DgramType::data_handler on_data_cb;
@@ -83,6 +97,13 @@ namespace socketpp
             std::atomic<bool> armed {false};
             std::atomic<bool> paused {false};
 
+            /// Claimed peer map -- accessed only on the event loop thread.
+            std::unordered_map<Address, std::shared_ptr<peer_impl_type>> claimed_peers;
+
+            /// Event loop background thread id, stored during do_create() for
+            /// same-thread detection in do_claim().
+            std::thread::id loop_thread_id;
+
             /// Factory initialization: open socket, apply SO flags, bind, start loop.
             static result<void> do_create(dgram_impl &self, const Address &addr, const dgram_config &config)
             {
@@ -100,6 +121,7 @@ namespace socketpp
                 self.socket.set_non_blocking(true);
 
                 self.pool = std::make_unique<detail::thread_pool>(config.worker_threads);
+                self.serial = std::make_unique<detail::serial_queue>(self.pool.get());
                 self.buf_size = config.read_buffer_size;
                 self.read_buf.resize(config.read_buffer_size);
 
@@ -117,7 +139,12 @@ namespace socketpp
 
                 // Start the event loop on a background thread. The socket is NOT
                 // registered for reading yet -- that happens in arm().
-                self.background_thread = std::thread([&self]() { self.loop.run(); });
+                self.background_thread = std::thread(
+                    [&self]()
+                    {
+                        self.loop_thread_id = std::this_thread::get_id();
+                        self.loop.run();
+                    });
 
                 return {};
             }
@@ -146,7 +173,7 @@ namespace socketpp
                         if (on_error_cb)
                         {
                             auto ec = recv_r.error();
-                            pool->submit([this, ec]() { on_error_cb(ec); });
+                            serial->submit([this, ec]() { on_error_cb(ec); });
                         }
 
                         break;
@@ -159,49 +186,122 @@ namespace socketpp
 
                     if (on_data_batch_cb)
                     {
-                        // Copy received data into a shared buffer and build message array
+                        // Copy received data into a shared buffer and build message array.
+                        // Claimed peers are checked per-entry; claimed datagrams are
+                        // forwarded to the peer and excluded from the batch callback.
                         size_t total_bytes = 0;
-
-                        for (int i = 0; i < count; ++i)
-                            total_bytes += batch_entries[i].transferred;
-
-                        auto shared_buf = std::make_shared<std::vector<char>>(total_bytes);
-                        auto shared_msgs = std::make_shared<std::vector<Message>>(count);
-
-                        size_t offset = 0;
+                        int unclaimed_count = 0;
 
                         for (int i = 0; i < count; ++i)
                         {
-                            auto &entry = batch_entries[i];
-                            std::memcpy(shared_buf->data() + offset, entry.buf, entry.transferred);
-
                             Address from;
-                            std::memcpy(&from, entry.addr.data(), sizeof(from));
+                            std::memcpy(&from, batch_entries[i].addr.data(), sizeof(from));
 
-                            (*shared_msgs)[i].data = shared_buf->data() + offset;
-                            (*shared_msgs)[i].len = entry.transferred;
-                            (*shared_msgs)[i].from = from;
+                            auto it = claimed_peers.find(from);
 
-                            offset += entry.transferred;
+                            if (it != claimed_peers.end())
+                            {
+                                // Lazy cleanup: if peer was relinquished, remove and
+                                // let datagram fall through to main callback.
+                                if (!it->second->open_.load(std::memory_order_relaxed))
+                                {
+                                    claimed_peers.erase(it);
+                                    total_bytes += batch_entries[i].transferred;
+                                    ++unclaimed_count;
+                                    continue;
+                                }
+
+                                // Forward to claimed peer. On Linux/macOS this is a race
+                                // straggler (kernel already routing to connected socket);
+                                // on Windows this is the primary delivery path.
+                                if constexpr (!has_kernel_udp_demux)
+                                {
+                                    it->second->deliver_data(
+                                        static_cast<const char *>(batch_entries[i].buf), batch_entries[i].transferred);
+                                }
+                                // Either way, skip main callback for this datagram.
+                            }
+                            else
+                            {
+                                total_bytes += batch_entries[i].transferred;
+                                ++unclaimed_count;
+                            }
                         }
 
-                        pool->submit(
-                            [this, shared_buf, shared_msgs]()
-                            { on_data_batch_cb(span<const Message>(shared_msgs->data(), shared_msgs->size())); });
+                        if (unclaimed_count > 0)
+                        {
+                            auto shared_buf = std::make_shared<std::vector<char>>(total_bytes);
+                            auto shared_msgs = std::make_shared<std::vector<Message>>(unclaimed_count);
+
+                            size_t offset = 0;
+                            int msg_idx = 0;
+
+                            for (int i = 0; i < count; ++i)
+                            {
+                                Address from;
+                                std::memcpy(&from, batch_entries[i].addr.data(), sizeof(from));
+
+                                auto cp_it = claimed_peers.find(from);
+                                if (cp_it != claimed_peers.end()
+                                    && cp_it->second->open_.load(std::memory_order_relaxed))
+                                    continue;
+
+                                auto &entry = batch_entries[i];
+                                std::memcpy(shared_buf->data() + offset, entry.buf, entry.transferred);
+
+                                (*shared_msgs)[msg_idx].data = shared_buf->data() + offset;
+                                (*shared_msgs)[msg_idx].len = entry.transferred;
+                                (*shared_msgs)[msg_idx].from = from;
+
+                                offset += entry.transferred;
+                                ++msg_idx;
+                            }
+
+                            serial->submit(
+                                [this, shared_buf, shared_msgs]()
+                                { on_data_batch_cb(span<const Message>(shared_msgs->data(), shared_msgs->size())); });
+                        }
                     }
                     else if (on_data_cb)
                     {
                         for (int i = 0; i < count; ++i)
                         {
                             auto &entry = batch_entries[i];
-                            auto data = std::vector<char>(
-                                static_cast<char *>(entry.buf), static_cast<char *>(entry.buf) + entry.transferred);
 
                             Address sender;
                             std::memcpy(&sender, entry.addr.data(), sizeof(sender));
 
-                            pool->submit([this, d = std::move(data), sender]()
-                                         { on_data_cb(d.data(), d.size(), sender); });
+                            // Check claimed peers before dispatching to main on_data.
+                            auto it = claimed_peers.find(sender);
+
+                            if (it != claimed_peers.end())
+                            {
+                                // Lazy cleanup: if peer was relinquished, remove and
+                                // let datagram fall through to main callback.
+                                if (!it->second->open_.load(std::memory_order_relaxed))
+                                {
+                                    claimed_peers.erase(it);
+                                    // Fall through to main on_data below.
+                                }
+                                else
+                                {
+                                    // On Windows: forward to claimed peer.
+                                    // On Linux/macOS: straggler from race at claim time; drop.
+                                    if constexpr (!has_kernel_udp_demux)
+                                    {
+                                        it->second->deliver_data(
+                                            static_cast<const char *>(entry.buf), entry.transferred);
+                                    }
+
+                                    continue;
+                                }
+                            }
+
+                            auto data = std::vector<char>(
+                                static_cast<char *>(entry.buf), static_cast<char *>(entry.buf) + entry.transferred);
+
+                            serial->submit([this, d = std::move(data), sender]()
+                                           { on_data_cb(d.data(), d.size(), sender); });
                         }
                     }
 
@@ -341,12 +441,12 @@ namespace socketpp
             {
                 auto p = std::make_shared<std::promise<timer_handle>>();
                 auto f = p->get_future();
-                auto *pp = pool.get();
+                auto *sq = serial.get();
 
                 loop.post(
-                    [this, delay, cb = std::move(cb), p, pp]() mutable
+                    [this, delay, cb = std::move(cb), p, sq]() mutable
                     {
-                        auto h = loop.defer(delay, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        auto h = loop.defer(delay, [sq, cb = std::move(cb)]() { sq->submit(cb); });
                         p->set_value(h);
                     });
 
@@ -358,12 +458,12 @@ namespace socketpp
             {
                 auto p = std::make_shared<std::promise<timer_handle>>();
                 auto f = p->get_future();
-                auto *pp = pool.get();
+                auto *sq = serial.get();
 
                 loop.post(
-                    [this, interval, cb = std::move(cb), p, pp]() mutable
+                    [this, interval, cb = std::move(cb), p, sq]() mutable
                     {
-                        auto h = loop.repeat(interval, [pp, cb = std::move(cb)]() { pp->submit(cb); });
+                        auto h = loop.repeat(interval, [sq, cb = std::move(cb)]() { sq->submit(cb); });
                         p->set_value(h);
                     });
 
@@ -373,11 +473,125 @@ namespace socketpp
             /// Post a callback through the event loop to the thread pool.
             void do_post(std::function<void()> cb)
             {
-                auto *pp = pool.get();
-                loop.post([pp, cb = std::move(cb)]() { pp->submit(cb); });
+                auto *sq = serial.get();
+                loop.post([sq, cb = std::move(cb)]() { sq->submit(cb); });
             }
 
-            /// Shutdown sequence: stop loop, join thread, close socket, shutdown pool.
+            /// Claim a peer address: creates a peer impl, inserts into claimed_peers map.
+            ///
+            /// On Linux/macOS: also creates a connected UDP peer socket for kernel demux.
+            /// On Windows: no peer socket; parent's handle_readable() routes traffic.
+            ///
+            /// Deadlock prevention: if called from the event loop thread (e.g. inside
+            /// an on_data callback), the insertion is executed inline instead of posting
+            /// to the event loop and blocking on a future.
+            /// Claim a peer address using a pre-created peer impl.
+            ///
+            /// The caller creates the shared_ptr<peer_impl_type> (or a derived type)
+            /// and passes it in. This avoids the base-to-derived shared_ptr conversion
+            /// issue: dgram4::claim() creates shared_ptr<dgram4_peer::impl> (derived)
+            /// and passes it here as shared_ptr<peer_impl_type> (base). The caller
+            /// retains the derived shared_ptr for assignment to dgram4_peer::impl_.
+            result<void> do_claim(const Address &peer_addr, std::shared_ptr<peer_impl_type> pi)
+            {
+                auto execute_claim = [this, &peer_addr, &pi]() -> result<void>
+                {
+                    if (claimed_peers.find(peer_addr) != claimed_peers.end())
+                        return errc::address_in_use;
+
+                    if constexpr (has_kernel_udp_demux)
+                    {
+                        auto local = do_local_addr();
+                        auto peer_r = PeerSocket::create(local, peer_addr);
+
+                        if (!peer_r)
+                            return peer_r.error();
+
+                        pi->peer_socket_ = std::move(peer_r.value());
+                    }
+
+                    claimed_peers[peer_addr] = pi;
+                    return {};
+                };
+
+                // Same-thread detection: if we're on the event loop thread,
+                // execute inline to avoid deadlock from post+future.
+                if (std::this_thread::get_id() == loop_thread_id)
+                {
+                    auto r = execute_claim();
+
+                    if (!r)
+                        return r.error();
+
+                    if constexpr (has_kernel_udp_demux)
+                        pi->arm(buf_size);
+
+                    return {};
+                }
+                else
+                {
+                    auto p = std::make_shared<std::promise<result<void>>>();
+                    auto f = p->get_future();
+
+                    loop.post([p, execute_claim]() { p->set_value(execute_claim()); });
+
+                    auto r = f.get();
+
+                    if (!r)
+                        return r.error();
+
+                    if constexpr (has_kernel_udp_demux)
+                        pi->arm(buf_size);
+
+                    return {};
+                }
+            }
+
+            /// Relinquish a previously claimed peer. Removes from claimed_peers map
+            /// and cleans up the peer impl (closes peer socket on Linux/macOS).
+            void do_relinquish(const Address &peer_addr)
+            {
+                // Same-thread detection for deadlock prevention
+                if (std::this_thread::get_id() == loop_thread_id)
+                {
+                    auto it = claimed_peers.find(peer_addr);
+
+                    if (it != claimed_peers.end())
+                    {
+                        it->second->do_relinquish();
+                        claimed_peers.erase(it);
+                    }
+                }
+                else
+                {
+                    auto p = std::make_shared<std::promise<void>>();
+                    auto f = p->get_future();
+
+                    loop.post(
+                        [this, peer_addr, p]()
+                        {
+                            auto it = claimed_peers.find(peer_addr);
+
+                            if (it != claimed_peers.end())
+                            {
+                                it->second->do_relinquish();
+                                claimed_peers.erase(it);
+                            }
+
+                            p->set_value();
+                        });
+
+                    f.get();
+                }
+            }
+
+            /// Shutdown sequence: relinquish all peers, stop loop, join thread,
+            /// close socket, shutdown pool.
+            ///
+            /// Peers must be relinquished BEFORE stopping the event loop because
+            /// on Linux/macOS, relinquish removes peer socket fds from the event
+            /// loop's dispatcher. Those removals must execute while the loop is
+            /// still running.
             ///
             /// Uses post() to send the stop signal INSIDE the event loop. This
             /// avoids a race where loop.stop() is called before run() starts
@@ -387,6 +601,17 @@ namespace socketpp
             /// case where the loop hasn't started polling yet.
             void do_destroy()
             {
+                // Relinquish all claimed peers inline (we haven't stopped the
+                // loop yet, so fd removal posts will execute).
+                loop.post(
+                    [this]()
+                    {
+                        for (auto &[addr, pi] : claimed_peers)
+                            pi->do_relinquish();
+
+                        claimed_peers.clear();
+                    });
+
                 loop.post([this]() { loop.stop(); });
                 loop.stop();
 
@@ -410,7 +635,8 @@ namespace socketpp
 
     // ── dgram4 ───────────────────────────────────────────────────────────────────
 
-    struct dgram4::impl : dgram_impl<dgram4, udp4_socket, inet4_address, dgram4_send_entry, dgram4_message>
+    struct dgram4::impl :
+        dgram_impl<dgram4, dgram4_peer, udp4_socket, udp4_peer_socket, inet4_address, dgram4_send_entry, dgram4_message>
     {
     };
 
@@ -479,6 +705,19 @@ namespace socketpp
         return impl_->do_send_batch(msgs);
     }
 
+    result<dgram4_peer> dgram4::claim(const inet4_address &peer_addr)
+    {
+        auto pi = std::make_shared<dgram4_peer::impl>(peer_addr, &impl_->loop, impl_->pool.get(), &impl_->socket);
+        auto r = impl_->do_claim(peer_addr, pi);
+
+        if (!r)
+            return r.error();
+
+        dgram4_peer peer;
+        peer.impl_ = std::move(pi);
+        return peer;
+    }
+
     timer_handle dgram4::defer(std::chrono::milliseconds delay, std::function<void()> cb)
     {
         return impl_->do_defer(delay, std::move(cb));
@@ -501,7 +740,8 @@ namespace socketpp
 
     // ── dgram6 ───────────────────────────────────────────────────────────────────
 
-    struct dgram6::impl : dgram_impl<dgram6, udp6_socket, inet6_address, dgram6_send_entry, dgram6_message>
+    struct dgram6::impl :
+        dgram_impl<dgram6, dgram6_peer, udp6_socket, udp6_peer_socket, inet6_address, dgram6_send_entry, dgram6_message>
     {
     };
 
@@ -568,6 +808,19 @@ namespace socketpp
     result<int> dgram6::send_batch(span<const dgram6_send_entry> msgs)
     {
         return impl_->do_send_batch(msgs);
+    }
+
+    result<dgram6_peer> dgram6::claim(const inet6_address &peer_addr)
+    {
+        auto pi = std::make_shared<dgram6_peer::impl>(peer_addr, &impl_->loop, impl_->pool.get(), &impl_->socket);
+        auto r = impl_->do_claim(peer_addr, pi);
+
+        if (!r)
+            return r.error();
+
+        dgram6_peer peer;
+        peer.impl_ = std::move(pi);
+        return peer;
     }
 
     timer_handle dgram6::defer(std::chrono::milliseconds delay, std::function<void()> cb)
