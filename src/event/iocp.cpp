@@ -452,11 +452,11 @@ namespace socketpp::detail
             socket_t fd = invalid_socket;
             io_callback callback;
             io_event interest = io_event::none;
-            OVERLAPPED read_ov = {};      ///< Used by arm_read() for the zero-byte WSARecv.
-            OVERLAPPED write_ov = {};     ///< Used by arm_write() for the zero-byte WSASend.
-            bool read_pending = false;    ///< True while a zero-byte WSARecv is in flight.
-            bool write_pending = false;   ///< True while a zero-byte WSASend is in flight.
-            bool is_listener = false;     ///< True for listening sockets and UDP sockets (polled via WSAPoll).
+            OVERLAPPED read_ov = {}; ///< Used by arm_read() for the zero-byte WSARecv.
+            OVERLAPPED write_ov = {}; ///< Used by arm_write() for the zero-byte WSASend.
+            bool read_pending = false; ///< True while a zero-byte WSARecv is in flight.
+            bool write_pending = false; ///< True while a zero-byte WSASend is in flight.
+            bool is_listener = false; ///< True for listening sockets and UDP sockets (polled via WSAPoll).
         };
 
         std::unordered_map<socket_t, std::unique_ptr<per_socket_state>> states_;
@@ -469,11 +469,11 @@ namespace socketpp::detail
             timer_id id = 0;
             std::function<void()> callback;
             bool repeating = false;
-            HANDLE iocp = nullptr;           ///< Non-owning handle used by the TP callback to post completions.
+            HANDLE iocp = nullptr; ///< Non-owning handle used by the TP callback to post completions.
             PTP_TIMER tp_timer = nullptr;
         };
 
-        spinlock timer_mutex_;               ///< Protects timer_infos_ (accessed from TP threads and loop thread).
+        spinlock timer_mutex_; ///< Protects timer_infos_ (accessed from TP threads and loop thread).
         std::unordered_map<timer_id, std::shared_ptr<timer_info>> timer_infos_;
         std::atomic<timer_id> next_timer_id_ {1};
 

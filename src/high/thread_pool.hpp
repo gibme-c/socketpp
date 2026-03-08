@@ -103,12 +103,12 @@ namespace socketpp::detail
         size_t size() const noexcept;
 
       private:
-        std::vector<std::thread> workers_;          ///< Worker threads.
-        std::deque<std::function<void()>> queue_;   ///< Pending task queue.
-        mutable std::mutex mutex_;                  ///< Protects queue_ and stopped_.
-        std::condition_variable cv_;                ///< Signals workers when tasks arrive or shutdown begins.
-        bool stopped_ = false;                      ///< Set to true on shutdown.
-        size_t max_queue_size_ = 0;                 ///< Maximum queue depth (0 = unlimited).
+        std::vector<std::thread> workers_; ///< Worker threads.
+        std::deque<std::function<void()>> queue_; ///< Pending task queue.
+        mutable std::mutex mutex_; ///< Protects queue_ and stopped_.
+        std::condition_variable cv_; ///< Signals workers when tasks arrive or shutdown begins.
+        bool stopped_ = false; ///< Set to true on shutdown.
+        size_t max_queue_size_ = 0; ///< Maximum queue depth (0 = unlimited).
     };
 
 } // namespace socketpp::detail

@@ -319,8 +319,8 @@ namespace socketpp::detail
 
         std::unordered_map<Addr, peer_entry> peers_;
         catch_all_callback catch_all_;
-        spinlock mutex_;                ///< Protects peers_ and catch_all_.
-        spinlock send_mutex_;          ///< Protects send_to() from concurrent access.
+        spinlock mutex_; ///< Protects peers_ and catch_all_.
+        spinlock send_mutex_; ///< Protects send_to() from concurrent access.
 
         // 64 KB member buffer for receiving datagrams. Allocated as part of the
         // mux object to avoid large stack frames on each on_readable() call.

@@ -1,14 +1,15 @@
 add_executable(tests tests.cpp)
-target_link_libraries(tests PRIVATE socketpp::socketpp)
+set_target_properties(tests PROPERTIES OUTPUT_NAME unit_tests)
+target_link_libraries(tests PRIVATE socketpp)
 socketpp_configure_executable(tests)
 add_test(NAME tests COMMAND tests)
 
 add_executable(blackbox_verify blackbox_verify.cpp)
-target_link_libraries(blackbox_verify PRIVATE socketpp::socketpp)
+target_link_libraries(blackbox_verify PRIVATE socketpp)
 socketpp_configure_executable(blackbox_verify)
 add_test(NAME blackbox_verify COMMAND blackbox_verify)
 
 add_executable(high_level_tests high_level_tests.cpp)
-target_link_libraries(high_level_tests PRIVATE socketpp::socketpp)
+target_link_libraries(high_level_tests PRIVATE socketpp)
 socketpp_configure_executable(high_level_tests)
 add_test(NAME high_level_tests COMMAND high_level_tests)

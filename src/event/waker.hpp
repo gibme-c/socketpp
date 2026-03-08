@@ -301,11 +301,11 @@ namespace socketpp::detail
         }
 
 #if defined(SOCKETPP_OS_LINUX)
-        int efd_ = -1;                ///< eventfd file descriptor.
+        int efd_ = -1; ///< eventfd file descriptor.
 #elif defined(SOCKETPP_OS_MACOS)
-        int pipe_fds_[2] = {-1, -1};  ///< pipe fds: [0] = read end, [1] = write end.
+        int pipe_fds_[2] = {-1, -1}; ///< pipe fds: [0] = read end, [1] = write end.
 #elif defined(SOCKETPP_OS_WINDOWS)
-        HANDLE iocp_ = nullptr;       ///< Non-owning handle to the IOCP instance.
+        HANDLE iocp_ = nullptr; ///< Non-owning handle to the IOCP instance.
 #endif
     };
 

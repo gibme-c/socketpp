@@ -25,7 +25,7 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /// @file udp_echo_server.cpp
-/// UDP echo server using the high-level socketpp API.
+/// UDP echo server using the high-level socketpp dgram API.
 /// Demonstrates both IPv4 (127.0.0.1:9001) and IPv6 ([::1]:9061) servers.
 
 #include <iostream>
@@ -36,55 +36,49 @@ int main()
 {
     // ── IPv4 UDP echo server ────────────────────────────────────────────
 
-    socketpp::udp4_server server4;
+    auto r4 = socketpp::dgram4::create(socketpp::inet4_address::loopback(9001));
 
-    server4.on_message(
+    if (!r4)
+    {
+        std::cerr << "IPv4 create failed: " << r4.message() << "\n";
+        return 1;
+    }
+
+    auto server4 = std::move(r4.value());
+
+    server4.on_data(
         [&server4](const char *data, size_t len, const socketpp::inet4_address &from)
         {
             std::cout << "IPv4 received " << len << " bytes from " << from.to_string() << "\n";
             server4.send_to(data, len, from);
         });
 
-    auto r4 = server4.bind(socketpp::inet4_address::loopback(9001));
-
-    if (!r4)
-    {
-        std::cerr << "IPv4 bind failed: " << r4.message() << "\n";
-        return 1;
-    }
-
     std::cout << "IPv4 UDP echo server listening on 127.0.0.1:9001\n";
-    server4.start();
 
     // ── IPv6 UDP echo server ────────────────────────────────────────────
 
-    socketpp::udp6_server server6;
+    auto r6 = socketpp::dgram6::create(socketpp::inet6_address::loopback(9061));
 
-    server6.on_message(
+    if (!r6)
+    {
+        std::cerr << "IPv6 create failed: " << r6.message() << "\n";
+        return 1;
+    }
+
+    auto server6 = std::move(r6.value());
+
+    server6.on_data(
         [&server6](const char *data, size_t len, const socketpp::inet6_address &from)
         {
             std::cout << "IPv6 received " << len << " bytes from " << from.to_string() << "\n";
             server6.send_to(data, len, from);
         });
 
-    auto r6 = server6.bind(socketpp::inet6_address::loopback(9061));
-
-    if (!r6)
-    {
-        std::cerr << "IPv6 bind failed: " << r6.message() << "\n";
-        server4.stop();
-        return 1;
-    }
-
     std::cout << "IPv6 UDP echo server listening on [::1]:9061\n";
     std::cout << "Shutting down in 60 seconds...\n";
-    server6.start();
 
-    // Run for 60 seconds then shut down
+    // Run for 60 seconds then shut down (destructors handle cleanup)
     std::this_thread::sleep_for(std::chrono::seconds(60));
-
-    server4.stop();
-    server6.stop();
 
     std::cout << "Shutdown complete\n";
     return 0;

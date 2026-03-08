@@ -17,6 +17,7 @@ project(socketpp
 
 include(CheckCXXCompilerFlag)
 include(CheckCXXSourceCompiles)
+include(CMakePushCheckState)
 
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -27,20 +28,20 @@ endif()
 
 option(SOCKETPP_BUILD_EXAMPLES "Build examples" OFF)
 if(DEFINED ENV{SOCKETPP_BUILD_EXAMPLES})
-    set(SOCKETPP_BUILD_EXAMPLES $ENV{SOCKETPP_BUILD_EXAMPLES})
+    set(SOCKETPP_BUILD_EXAMPLES "$ENV{SOCKETPP_BUILD_EXAMPLES}" CACHE BOOL "Build examples" FORCE)
 endif()
 
 option(SOCKETPP_BUILD_TESTS "Build tests" OFF)
 if(DEFINED ENV{SOCKETPP_BUILD_TESTS})
-    set(SOCKETPP_BUILD_TESTS $ENV{SOCKETPP_BUILD_TESTS})
+    set(SOCKETPP_BUILD_TESTS "$ENV{SOCKETPP_BUILD_TESTS}" CACHE BOOL "Build tests" FORCE)
 endif()
 
 
 ## This section describes our general CMake setup options
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(CMAKE_SKIP_INSTALL_RULES OFF FORCE)
-    set(CMAKE_SKIP_PACKAGE_ALL_DEPENDENCY ON FORCE)
+    set(CMAKE_SKIP_INSTALL_RULES OFF)
+    set(CMAKE_SKIP_PACKAGE_ALL_DEPENDENCY ON)
     set(CMAKE_SUPPRESS_REGENERATION ON)
 endif()
 
@@ -66,11 +67,12 @@ function(socketpp_target_harden TARGET_NAME)
 
         # Stack protector (probe once, cache result)
         if(NOT DEFINED _SOCKETPP_HAS_STACK_PROTECTOR)
+            cmake_push_check_state(RESET)
             set(CMAKE_REQUIRED_FLAGS "-fstack-protector-strong")
             check_cxx_source_compiles(
                 "int main() { char buf[64]; buf[0] = 0; return buf[0]; }"
                 _SOCKETPP_HAS_STACK_PROTECTOR)
-            unset(CMAKE_REQUIRED_FLAGS)
+            cmake_pop_check_state()
             set(_SOCKETPP_HAS_STACK_PROTECTOR ${_SOCKETPP_HAS_STACK_PROTECTOR} CACHE INTERNAL "")
         endif()
         if(_SOCKETPP_HAS_STACK_PROTECTOR)
@@ -155,6 +157,10 @@ function(socketpp_configure_executable TARGET_NAME)
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     )
     if(NOT MSVC)
         target_compile_options(${TARGET_NAME} PRIVATE
@@ -166,8 +172,8 @@ function(socketpp_configure_executable TARGET_NAME)
             set_property(TARGET ${TARGET_NAME} APPEND_STRING PROPERTY
                 LINK_FLAGS " -static-libgcc -static-libstdc++")
         endif()
-        # PIE for full ASLR on ELF platforms
-        if(NOT WIN32)
+        # PIE for full ASLR on ELF platforms (macOS defaults to PIE)
+        if(NOT WIN32 AND NOT APPLE)
             target_compile_options(${TARGET_NAME} PRIVATE -fPIE)
             set_property(TARGET ${TARGET_NAME} APPEND_STRING PROPERTY
                 LINK_FLAGS " -pie")
@@ -197,13 +203,9 @@ add_library(socketpp STATIC
     src/socket/udp_recv_async.cpp
     src/event/loop.cpp
     src/high/thread_pool.cpp
-    src/high/tcp_connection.cpp
-    src/high/tcp_server.cpp
-    src/high/tcp_client.cpp
-    src/high/udp_server.cpp
+    src/high/stream.cpp
+    src/high/dgram.cpp
 )
-
-add_library(socketpp::socketpp ALIAS socketpp)
 
 # Platform-specific backend sources
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -214,24 +216,17 @@ elseif(WIN32)
     target_sources(socketpp PRIVATE src/event/iocp.cpp)
 endif()
 
-set_target_properties(socketpp PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+set_target_properties(socketpp PROPERTIES CXX_EXTENSIONS OFF)
 
 target_include_directories(socketpp
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Consumers treat socketpp headers as system headers (suppresses their -Werror warnings)
+# Consumers get our headers as -isystem (suppresses warnings from our headers in their builds)
 target_include_directories(socketpp SYSTEM INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_compile_features(socketpp PUBLIC cxx_std_17)
@@ -243,49 +238,14 @@ endif()
 
 socketpp_target_harden(socketpp)
 
-# Install
-include(GNUInstallDirs)
-install(TARGETS socketpp EXPORT socketppTargets
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-
-# Install public headers only (exclude detail/ and internal headers)
-install(DIRECTORY include/
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    FILES_MATCHING PATTERN "*.hpp"
-    PATTERN "detail" EXCLUDE
-)
-
-install(EXPORT socketppTargets
-    FILE socketppTargets.cmake
-    NAMESPACE socketpp::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/socketpp
-)
-
-include(CMakePackageConfigHelpers)
-configure_package_config_file(
-    cmake/socketppConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/socketppConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/socketpp
-)
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/socketppConfigVersion.cmake
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/socketppConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/socketppConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/socketpp
-)
-
 # Examples and tests
 if(SOCKETPP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
 if(SOCKETPP_BUILD_TESTS)
-    enable_testing()
+    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        enable_testing()
+    endif()
     add_subdirectory(tests)
 endif()

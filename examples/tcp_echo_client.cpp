@@ -25,7 +25,7 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /// @file tcp_echo_client.cpp
-/// TCP echo client using the high-level socketpp API.
+/// TCP echo client using the high-level socketpp stream API.
 /// Demonstrates both IPv4 (127.0.0.1:9000) and IPv6 ([::1]:9060) connections.
 
 #include <atomic>
@@ -40,80 +40,88 @@ int main()
 
     {
         std::atomic<bool> done {false};
-        socketpp::tcp4_client client;
 
-        client.on_connect(
-            [&done](socketpp::tcp4_connection &conn)
-            {
-                std::cout << "IPv4 connected to " << conn.peer_addr().to_string() << "\n";
+        auto r4 = socketpp::stream4::connect(socketpp::inet4_address::loopback(9000));
 
-                const std::string msg = "Hello from socketpp IPv4 client!";
-                conn.send(msg);
-                std::cout << "IPv4 sent: " << msg << "\n";
+        if (!r4)
+        {
+            std::cerr << "IPv4 connect setup failed: " << r4.message() << "\n";
+            return 1;
+        }
 
-                conn.on_data(
-                    [&done](const char *data, size_t len)
-                    {
-                        std::string echo(data, len);
-                        std::cout << "IPv4 received echo: " << echo << "\n";
-                        done.store(true, std::memory_order_relaxed);
-                    });
-            });
+        auto client4 = std::move(r4.value());
 
-        client.on_error(
-            [&done](std::error_code ec)
-            {
-                std::cerr << "IPv4 connect failed: " << ec.message() << "\n";
-                done.store(true, std::memory_order_relaxed);
-            });
+        client4
+            .on_error(
+                [&done](std::error_code ec)
+                {
+                    std::cerr << "IPv4 connect failed: " << ec.message() << "\n";
+                    done.store(true, std::memory_order_relaxed);
+                })
+            .on_connect(
+                [&done](socketpp::stream4::connection &conn)
+                {
+                    std::cout << "IPv4 connected to " << conn.peer_addr().to_string() << "\n";
 
-        client.connect(socketpp::inet4_address::loopback(9000));
-        client.start();
+                    const std::string msg = "Hello from socketpp IPv4 client!";
+                    conn.send(msg);
+                    std::cout << "IPv4 sent: " << msg << "\n";
+
+                    conn.on_data(
+                        [&done](const char *data, size_t len)
+                        {
+                            std::string echo(data, len);
+                            std::cout << "IPv4 received echo: " << echo << "\n";
+                            done.store(true, std::memory_order_relaxed);
+                        });
+                });
 
         while (!done.load(std::memory_order_relaxed))
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        client.stop();
     }
 
     // ── IPv6 client ─────────────────────────────────────────────────────
 
     {
         std::atomic<bool> done {false};
-        socketpp::tcp6_client client;
 
-        client.on_connect(
-            [&done](socketpp::tcp6_connection &conn)
-            {
-                std::cout << "IPv6 connected to " << conn.peer_addr().to_string() << "\n";
+        auto r6 = socketpp::stream6::connect(socketpp::inet6_address::loopback(9060));
 
-                const std::string msg = "Hello from socketpp IPv6 client!";
-                conn.send(msg);
-                std::cout << "IPv6 sent: " << msg << "\n";
+        if (!r6)
+        {
+            std::cerr << "IPv6 connect setup failed: " << r6.message() << "\n";
+            return 1;
+        }
 
-                conn.on_data(
-                    [&done](const char *data, size_t len)
-                    {
-                        std::string echo(data, len);
-                        std::cout << "IPv6 received echo: " << echo << "\n";
-                        done.store(true, std::memory_order_relaxed);
-                    });
-            });
+        auto client6 = std::move(r6.value());
 
-        client.on_error(
-            [&done](std::error_code ec)
-            {
-                std::cerr << "IPv6 connect failed: " << ec.message() << "\n";
-                done.store(true, std::memory_order_relaxed);
-            });
+        client6
+            .on_error(
+                [&done](std::error_code ec)
+                {
+                    std::cerr << "IPv6 connect failed: " << ec.message() << "\n";
+                    done.store(true, std::memory_order_relaxed);
+                })
+            .on_connect(
+                [&done](socketpp::stream6::connection &conn)
+                {
+                    std::cout << "IPv6 connected to " << conn.peer_addr().to_string() << "\n";
 
-        client.connect(socketpp::inet6_address::loopback(9060));
-        client.start();
+                    const std::string msg = "Hello from socketpp IPv6 client!";
+                    conn.send(msg);
+                    std::cout << "IPv6 sent: " << msg << "\n";
+
+                    conn.on_data(
+                        [&done](const char *data, size_t len)
+                        {
+                            std::string echo(data, len);
+                            std::cout << "IPv6 received echo: " << echo << "\n";
+                            done.store(true, std::memory_order_relaxed);
+                        });
+                });
 
         while (!done.load(std::memory_order_relaxed))
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        client.stop();
     }
 
     return 0;

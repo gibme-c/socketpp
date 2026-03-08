@@ -25,13 +25,13 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /**
- * @file tcp_connection_impl.hpp
- * @brief Shared internal implementation template for TCP connections (IPv4 and IPv6).
+ * @file connection_engine.hpp
+ * @brief Core TCP connection engine template (IPv4 and IPv6).
  *
  * Contains the tcp_conn_impl template that provides all connection logic:
  * non-blocking reads, buffered writes, event loop integration, and thread-safe
- * close semantics. Both tcp4_connection::impl and tcp6_connection::impl derive
- * from this template.
+ * close semantics. stream_conn_impl (in stream_connection_impl.hpp) extends
+ * this with pause/resume flow control.
  *
  * This is an internal header -- not part of the public API.
  *
@@ -48,8 +48,8 @@
  * - close is idempotent via atomic exchange on closed_.
  */
 
-#ifndef SOCKETPP_DETAIL_TCP_CONNECTION_IMPL_HPP
-#define SOCKETPP_DETAIL_TCP_CONNECTION_IMPL_HPP
+#ifndef SOCKETPP_DETAIL_CONNECTION_ENGINE_HPP
+#define SOCKETPP_DETAIL_CONNECTION_ENGINE_HPP
 
 #include "thread_pool.hpp"
 
@@ -58,7 +58,6 @@
 #include <mutex>
 #include <socketpp/event/loop.hpp>
 #include <socketpp/socket/tcp.hpp>
-#include <socketpp/tcp_connection.hpp>
 #include <vector>
 
 namespace socketpp::detail
@@ -80,30 +79,30 @@ namespace socketpp::detail
         using close_handler = std::function<void()>;
         using error_handler = std::function<void(std::error_code)>;
 
-        Socket socket_;                             ///< The underlying non-blocking TCP socket.
-        Address peer_;                              ///< Remote peer address, captured at accept/connect time.
-        Address local_;                             ///< Local address, captured at accept/connect time.
-        event_loop *loop_;                          ///< The event loop driving this connection's I/O.
-        thread_pool *pool_;                         ///< Thread pool for dispatching user callbacks.
+        Socket socket_; ///< The underlying non-blocking TCP socket.
+        Address peer_; ///< Remote peer address, captured at accept/connect time.
+        Address local_; ///< Local address, captured at accept/connect time.
+        event_loop *loop_; ///< The event loop driving this connection's I/O.
+        thread_pool *pool_; ///< Thread pool for dispatching user callbacks.
 
-        std::vector<char> read_buf_;                ///< Per-connection read buffer.
+        std::vector<char> read_buf_; ///< Per-connection read buffer.
 
-        std::mutex write_mutex_;                    ///< Protects write_queue_, write_queue_bytes_, write_registered_.
+        std::mutex write_mutex_; ///< Protects write_queue_, write_queue_bytes_, write_registered_.
         std::deque<std::vector<char>> write_queue_; ///< FIFO queue of outbound data chunks.
-        size_t write_queue_bytes_ = 0;              ///< Total bytes across all queued chunks.
-        size_t max_write_queue_bytes_;               ///< Backpressure limit; send() fails if exceeded.
-        bool write_registered_ = false;             ///< Whether writable interest has been requested.
+        size_t write_queue_bytes_ = 0; ///< Total bytes across all queued chunks.
+        size_t max_write_queue_bytes_; ///< Backpressure limit; send() fails if exceeded.
+        bool write_registered_ = false; ///< Whether writable interest has been requested.
 
         /// @warning Handlers must only be set before start_reading() is called
         ///          (i.e. during on_connect). The post() spinlock in start_reading()
         ///          provides the happens-before relationship that makes the handler
         ///          writes visible to the event loop thread. Setting handlers after
         ///          start_reading() is a data race on the std::function objects.
-        data_handler on_data_;                      ///< User callback for received data.
-        close_handler on_close_;                    ///< User callback for connection close.
-        error_handler on_error_;                    ///< User callback for errors.
+        data_handler on_data_; ///< User callback for received data.
+        close_handler on_close_; ///< User callback for connection close.
+        error_handler on_error_; ///< User callback for errors.
 
-        std::atomic<bool> closed_ {false};          ///< Ensures close logic runs at most once.
+        std::atomic<bool> closed_ {false}; ///< Ensures close logic runs at most once.
 
         tcp_conn_impl(
             Socket &&sock,
@@ -382,19 +381,4 @@ namespace socketpp::detail
 
 } // namespace socketpp::detail
 
-// ── impl struct definitions ──────────────────────────────────────────────────
-// These concrete structs bridge the public PIMPL types to the internal template.
-
-/// @brief IPv4 TCP connection implementation.
-struct socketpp::tcp4_connection::impl : socketpp::detail::tcp_conn_impl<socketpp::tcp4_socket, socketpp::inet4_address>
-{
-    using tcp_conn_impl::tcp_conn_impl;
-};
-
-/// @brief IPv6 TCP connection implementation.
-struct socketpp::tcp6_connection::impl : socketpp::detail::tcp_conn_impl<socketpp::tcp6_socket, socketpp::inet6_address>
-{
-    using tcp_conn_impl::tcp_conn_impl;
-};
-
-#endif // SOCKETPP_DETAIL_TCP_CONNECTION_IMPL_HPP
+#endif // SOCKETPP_DETAIL_CONNECTION_ENGINE_HPP

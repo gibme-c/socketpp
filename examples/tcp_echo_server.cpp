@@ -25,7 +25,7 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /// @file tcp_echo_server.cpp
-/// TCP echo server using the high-level socketpp API.
+/// TCP echo server using the high-level socketpp stream API.
 /// Demonstrates both IPv4 (127.0.0.1:9000) and IPv6 ([::1]:9060) servers.
 
 #include <iostream>
@@ -36,10 +36,18 @@ int main()
 {
     // ── IPv4 echo server ────────────────────────────────────────────────
 
-    socketpp::tcp4_server server4;
+    auto r4 = socketpp::stream4::listen(socketpp::inet4_address::loopback(9000));
+
+    if (!r4)
+    {
+        std::cerr << "IPv4 listen failed: " << r4.message() << "\n";
+        return 1;
+    }
+
+    auto server4 = std::move(r4.value());
 
     server4.on_connect(
-        [](socketpp::tcp4_connection &conn)
+        [](socketpp::stream4::connection &conn)
         {
             std::cout << "IPv4 client connected: " << conn.peer_addr().to_string() << "\n";
 
@@ -48,23 +56,22 @@ int main()
             conn.on_close([]() { std::cout << "IPv4 client disconnected\n"; });
         });
 
-    auto r4 = server4.listen(socketpp::inet4_address::loopback(9000));
-
-    if (!r4)
-    {
-        std::cerr << "IPv4 listen failed: " << r4.message() << "\n";
-        return 1;
-    }
-
     std::cout << "IPv4 echo server listening on 127.0.0.1:9000\n";
-    server4.start();
 
     // ── IPv6 echo server ────────────────────────────────────────────────
 
-    socketpp::tcp6_server server6;
+    auto r6 = socketpp::stream6::listen(socketpp::inet6_address::loopback(9060));
+
+    if (!r6)
+    {
+        std::cerr << "IPv6 listen failed: " << r6.message() << "\n";
+        return 1;
+    }
+
+    auto server6 = std::move(r6.value());
 
     server6.on_connect(
-        [](socketpp::tcp6_connection &conn)
+        [](socketpp::stream6::connection &conn)
         {
             std::cout << "IPv6 client connected: " << conn.peer_addr().to_string() << "\n";
 
@@ -73,24 +80,11 @@ int main()
             conn.on_close([]() { std::cout << "IPv6 client disconnected\n"; });
         });
 
-    auto r6 = server6.listen(socketpp::inet6_address::loopback(9060));
-
-    if (!r6)
-    {
-        std::cerr << "IPv6 listen failed: " << r6.message() << "\n";
-        server4.stop();
-        return 1;
-    }
-
     std::cout << "IPv6 echo server listening on [::1]:9060\n";
     std::cout << "Shutting down in 60 seconds...\n";
-    server6.start();
 
-    // Run for 60 seconds then shut down
+    // Run for 60 seconds then shut down (destructors handle cleanup)
     std::this_thread::sleep_for(std::chrono::seconds(60));
-
-    server4.stop();
-    server6.stop();
 
     std::cout << "Shutdown complete\n";
     return 0;

@@ -78,14 +78,13 @@ namespace socketpp
 
     // ── High-Level API ──────────────────────────────────────────────────────────
 
-    class tcp4_connection;
-    class tcp6_connection;
-    class tcp4_server;
-    class tcp6_server;
-    class tcp4_client;
-    class tcp6_client;
-    class udp4_server;
-    class udp6_server;
+    struct stream_listen_config;
+    struct stream_connect_config;
+    class stream4;
+    class stream6;
+    struct dgram_config;
+    class dgram4;
+    class dgram6;
 
 } // namespace socketpp
 

@@ -203,26 +203,8 @@ namespace socketpp
         if (SOCKETPP_UNLIKELY(handle_ == invalid_socket))
             return make_error_code(errc::invalid_state);
 
-        // Reject port 0 — ephemeral port binding causes subtle issues with
-        // address reuse and concurrent usage. Callers must specify a port.
-        {
-            const auto *sa = static_cast<const sockaddr *>(addr.data());
-
-            if (sa->sa_family == AF_INET)
-            {
-                const auto *sin = reinterpret_cast<const sockaddr_in *>(sa);
-
-                if (sin->sin_port == 0)
-                    return make_error_code(errc::invalid_argument);
-            }
-            else if (sa->sa_family == AF_INET6)
-            {
-                const auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(sa);
-
-                if (sin6->sin6_port == 0)
-                    return make_error_code(errc::invalid_argument);
-            }
-        }
+        // Port 0 (ephemeral) is allowed at this layer. The high-level API
+        // (dgram/stream) applies SO_EXCLUSIVEADDRUSE and other safety measures.
 
         if (SOCKETPP_UNLIKELY(
                 ::bind(
@@ -268,8 +250,7 @@ namespace socketpp
         sock_address addr;
         auto len = static_cast<socklen_t>(addr.size());
 
-        if (SOCKETPP_UNLIKELY(
-                ::getsockname(as_native(handle_), reinterpret_cast<sockaddr *>(addr.data()), &len) != 0))
+        if (SOCKETPP_UNLIKELY(::getsockname(as_native(handle_), reinterpret_cast<sockaddr *>(addr.data()), &len) != 0))
             return normalize_error(last_socket_error());
 
         addr.set_size(static_cast<uint32_t>(len));
@@ -285,8 +266,7 @@ namespace socketpp
         sock_address addr;
         auto len = static_cast<socklen_t>(addr.size());
 
-        if (SOCKETPP_UNLIKELY(
-                ::getpeername(as_native(handle_), reinterpret_cast<sockaddr *>(addr.data()), &len) != 0))
+        if (SOCKETPP_UNLIKELY(::getpeername(as_native(handle_), reinterpret_cast<sockaddr *>(addr.data()), &len) != 0))
             return normalize_error(last_socket_error());
 
         addr.set_size(static_cast<uint32_t>(len));

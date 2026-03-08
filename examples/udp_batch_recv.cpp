@@ -25,115 +25,130 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /// @file udp_batch_recv.cpp
-/// Demonstrates batch receive with socketpp.
-/// recv_batch abstracts platform differences: uses recvmmsg on Linux,
-/// falls back to a tight recv_from loop elsewhere. Callers just call recv_batch.
-/// Demonstrates both IPv4 (127.0.0.1:9002) and IPv6 ([::1]:9062) usage.
+/// Demonstrates receiving UDP datagrams using the high-level dgram API.
+/// Sets up IPv4 (127.0.0.1:9002) and IPv6 ([::1]:9062) receivers that
+/// print incoming datagrams. Also demonstrates using a second dgram4/dgram6
+/// instance to send test datagrams.
 
-#include <array>
+#include <atomic>
 #include <iostream>
 #include <socketpp.hpp>
 #include <string>
+#include <thread>
 
 int main()
 {
-    auto opts = socketpp::socket_options {}.reuse_addr(true);
-
-    // ── IPv4 batch receive ───────────────────────────────────────────────
+    // ── IPv4 datagram receiver ─────────────────────────────────────────
 
     {
-        socketpp::udp4_socket sock;
-        auto r = sock.open(socketpp::inet4_address::loopback(9002), opts);
+        std::atomic<int> received {0};
+        constexpr int expected = 5;
+
+        auto r = socketpp::dgram4::create(socketpp::inet4_address::loopback(9002));
 
         if (!r)
         {
-            std::cerr << "IPv4 failed to open: " << r.message() << "\n";
+            std::cerr << "IPv4 failed to create: " << r.message() << "\n";
         }
         else
         {
-            std::cout << "IPv4 batch receiver listening on " << socketpp::inet4_address::loopback(9002).to_string()
-                      << "\n";
+            auto receiver = std::move(r.value());
 
-            constexpr int batch_size = 16;
-            constexpr int buf_len = 1500;
+            std::cout << "IPv4 receiver listening on " << receiver.local_addr().to_string() << "\n";
 
-            std::array<std::array<char, buf_len>, batch_size> buffers {};
-            std::array<socketpp::msg_batch_entry, batch_size> entries {};
+            receiver.on_data(
+                [&received](const char *data, size_t len, const socketpp::inet4_address &from)
+                {
+                    std::string msg(data, len);
+                    auto idx = received.fetch_add(1, std::memory_order_relaxed);
+                    std::cout << "  IPv4 [" << idx << "] " << len << " bytes from " << from.to_string() << ": " << msg
+                              << "\n";
+                });
 
-            for (int i = 0; i < batch_size; ++i)
+            // Send some test datagrams using a second dgram4 as client
+            auto sender_r = socketpp::dgram4::create();
+
+            if (!sender_r)
             {
-                entries[i].buf = buffers[i].data();
-                entries[i].len = buf_len;
-            }
-
-            auto batch_r = sock.recv_batch(socketpp::span<socketpp::msg_batch_entry>(entries.data(), batch_size));
-
-            if (!batch_r)
-            {
-                std::cerr << "IPv4 recv_batch failed: " << batch_r.message() << "\n";
+                std::cerr << "IPv4 sender failed to create: " << sender_r.message() << "\n";
             }
             else
             {
-                auto count = batch_r.value();
-                std::cout << "IPv4 received " << count << " datagrams in one batch call:\n";
+                auto sender = std::move(sender_r.value());
+                socketpp::inet4_address dest("127.0.0.1", 9002);
 
-                for (int i = 0; i < count; ++i)
+                for (int i = 0; i < expected; ++i)
                 {
-                    std::string msg(static_cast<const char *>(entries[i].buf), entries[i].transferred);
-                    std::cout << "  [" << i << "] " << entries[i].transferred << " bytes: " << msg << "\n";
+                    std::string msg = "IPv4 message #" + std::to_string(i);
+                    sender.send_to(msg.data(), msg.size(), dest);
                 }
-            }
 
-            sock.close();
+                // Wait for all datagrams to arrive
+                for (int i = 0; i < 200 && received.load(std::memory_order_relaxed) < expected; ++i)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+
+                std::cout << "IPv4 received " << received.load(std::memory_order_relaxed) << " of " << expected
+                          << " datagrams\n";
+            }
         }
     }
 
-    // ── IPv6 batch receive ───────────────────────────────────────────────
+    // ── IPv6 datagram receiver ─────────────────────────────────────────
 
     {
-        socketpp::udp6_socket sock;
-        auto r = sock.open(socketpp::inet6_address::loopback(9062), opts);
+        std::atomic<int> received {0};
+        constexpr int expected = 5;
+
+        auto r = socketpp::dgram6::create(socketpp::inet6_address::loopback(9062));
 
         if (!r)
         {
-            std::cerr << "IPv6 failed to open: " << r.message() << "\n";
+            std::cerr << "IPv6 failed to create: " << r.message() << "\n";
         }
         else
         {
-            std::cout << "IPv6 batch receiver listening on " << socketpp::inet6_address::loopback(9062).to_string()
-                      << "\n";
+            auto receiver = std::move(r.value());
 
-            constexpr int batch_size = 16;
-            constexpr int buf_len = 1500;
+            std::cout << "IPv6 receiver listening on " << receiver.local_addr().to_string() << "\n";
 
-            std::array<std::array<char, buf_len>, batch_size> buffers {};
-            std::array<socketpp::msg_batch_entry, batch_size> entries {};
+            receiver.on_data(
+                [&received](const char *data, size_t len, const socketpp::inet6_address &from)
+                {
+                    std::string msg(data, len);
+                    auto idx = received.fetch_add(1, std::memory_order_relaxed);
+                    std::cout << "  IPv6 [" << idx << "] " << len << " bytes from " << from.to_string() << ": " << msg
+                              << "\n";
+                });
 
-            for (int i = 0; i < batch_size; ++i)
+            // Send some test datagrams using a second dgram6 as client
+            auto sender_r = socketpp::dgram6::create();
+
+            if (!sender_r)
             {
-                entries[i].buf = buffers[i].data();
-                entries[i].len = buf_len;
-            }
-
-            auto batch_r = sock.recv_batch(socketpp::span<socketpp::msg_batch_entry>(entries.data(), batch_size));
-
-            if (!batch_r)
-            {
-                std::cerr << "IPv6 recv_batch failed: " << batch_r.message() << "\n";
+                std::cerr << "IPv6 sender failed to create: " << sender_r.message() << "\n";
             }
             else
             {
-                auto count = batch_r.value();
-                std::cout << "IPv6 received " << count << " datagrams in one batch call:\n";
+                auto sender = std::move(sender_r.value());
+                socketpp::inet6_address dest = socketpp::inet6_address::loopback(9062);
 
-                for (int i = 0; i < count; ++i)
+                for (int i = 0; i < expected; ++i)
                 {
-                    std::string msg(static_cast<const char *>(entries[i].buf), entries[i].transferred);
-                    std::cout << "  [" << i << "] " << entries[i].transferred << " bytes: " << msg << "\n";
+                    std::string msg = "IPv6 message #" + std::to_string(i);
+                    sender.send_to(msg.data(), msg.size(), dest);
                 }
-            }
 
-            sock.close();
+                // Wait for all datagrams to arrive
+                for (int i = 0; i < 200 && received.load(std::memory_order_relaxed) < expected; ++i)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+
+                std::cout << "IPv6 received " << received.load(std::memory_order_relaxed) << " of " << expected
+                          << " datagrams\n";
+            }
         }
     }
 

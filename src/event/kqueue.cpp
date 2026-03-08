@@ -329,8 +329,9 @@ namespace socketpp::detail
         static constexpr uintptr_t WAKER_IDENT = UINTPTR_MAX;
 
         int kq_ = -1;
-        std::unordered_map<socket_t, io_callback> callbacks_;   ///< Socket fd -> user callback.
-        std::unordered_map<socket_t, io_event> interests_;       ///< Socket fd -> current interest set (for delta computation in modify).
+        std::unordered_map<socket_t, io_callback> callbacks_; ///< Socket fd -> user callback.
+        std::unordered_map<socket_t, io_event>
+            interests_; ///< Socket fd -> current interest set (for delta computation in modify).
 
         struct timer_info
         {

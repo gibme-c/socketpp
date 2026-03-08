@@ -29,7 +29,13 @@
 /// This file includes <socketpp.hpp> and static_asserts that platform types
 /// are NOT visible. If this file compiles, the black-box boundary holds.
 
-#include <socketpp.hpp>
+#include <socketpp/event/loop.hpp>
+#include <socketpp/net/address.hpp>
+#include <socketpp/net/inet4.hpp>
+#include <socketpp/net/inet6.hpp>
+#include <socketpp/platform/types.hpp>
+#include <socketpp/socket/tcp.hpp>
+#include <socketpp/socket/udp.hpp>
 
 // Verify AF_INET is not defined (would come from winsock2.h or sys/socket.h)
 #ifdef AF_INET

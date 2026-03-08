@@ -60,11 +60,11 @@ namespace socketpp
     /// always reported when they occur regardless of the interest mask.
     enum class io_event : uint32_t
     {
-        none = 0,               ///< No events.
-        readable = 1 << 0,      ///< Socket has data available for reading, or a new connection is pending (listeners).
-        writable = 1 << 1,      ///< Socket is ready for writing without blocking.
-        error = 1 << 2,         ///< An error condition exists on the socket.
-        hangup = 1 << 3,        ///< The socket has been hung up (local side).
+        none = 0, ///< No events.
+        readable = 1 << 0, ///< Socket has data available for reading, or a new connection is pending (listeners).
+        writable = 1 << 1, ///< Socket is ready for writing without blocking.
+        error = 1 << 2, ///< An error condition exists on the socket.
+        hangup = 1 << 3, ///< The socket has been hung up (local side).
         peer_shutdown = 1 << 4, ///< The remote peer has shut down its end of the connection (EOF).
     };
 

@@ -27,42 +27,17 @@
 #ifndef SOCKETPP_HPP
 #define SOCKETPP_HPP
 
-// ── Platform ─────────────────────────────────────────────────────────────────
-
-#include <socketpp/platform/capabilities.hpp>
-#include <socketpp/platform/detect.hpp>
-#include <socketpp/platform/error.hpp>
-#include <socketpp/platform/types.hpp>
 #include <socketpp/version.hpp>
 
-// ── Network Addresses ────────────────────────────────────────────────────────
+// ── High-Level API ───────────────────────────────────────────────────────
+//
+// These headers also transitively provide:
+//   - socketpp/platform/error.hpp   (result<T>, errc, error codes)
+//   - socketpp/net/inet4.hpp        (inet4_address)
+//   - socketpp/net/inet6.hpp        (inet6_address)
+//   - socketpp/socket/options.hpp   (socket_options, used in config structs)
 
-#include <socketpp/net/address.hpp>
-#include <socketpp/net/inet4.hpp>
-#include <socketpp/net/inet6.hpp>
-
-// ── Sockets ──────────────────────────────────────────────────────────────────
-
-#include <socketpp/socket/buf_profile.hpp>
-#include <socketpp/socket/options.hpp>
-#include <socketpp/socket/socket.hpp>
-#include <socketpp/socket/tcp.hpp>
-#include <socketpp/socket/tcp_connector.hpp>
-#include <socketpp/socket/tcp_listener.hpp>
-#include <socketpp/socket/udp.hpp>
-#include <socketpp/socket/udp_peer.hpp>
-
-// ── Event Loop ───────────────────────────────────────────────────────────────
-
-#include <socketpp/event/dispatcher.hpp>
-#include <socketpp/event/loop.hpp>
-#include <socketpp/event/timer.hpp>
-
-// ── High-Level API ───────────────────────────────────────────────────────────
-
-#include <socketpp/tcp_client.hpp>
-#include <socketpp/tcp_connection.hpp>
-#include <socketpp/tcp_server.hpp>
-#include <socketpp/udp_server.hpp>
+#include <socketpp/dgram.hpp>
+#include <socketpp/stream.hpp>
 
 #endif // SOCKETPP_HPP

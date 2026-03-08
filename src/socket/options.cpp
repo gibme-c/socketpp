@@ -79,11 +79,7 @@ namespace socketpp
 #endif
 
             if (::setsockopt(
-                    sock,
-                    level,
-                    optname,
-                    reinterpret_cast<const char *>(&value),
-                    static_cast<socklen_t>(sizeof(value)))
+                    sock, level, optname, reinterpret_cast<const char *>(&value), static_cast<socklen_t>(sizeof(value)))
                 != 0)
                 return normalize_error(last_socket_error());
 
@@ -98,12 +94,7 @@ namespace socketpp
             auto sock = static_cast<int>(handle);
 #endif
 
-            if (::setsockopt(
-                    sock,
-                    level,
-                    optname,
-                    reinterpret_cast<const char *>(data),
-                    static_cast<socklen_t>(len))
+            if (::setsockopt(sock, level, optname, reinterpret_cast<const char *>(data), static_cast<socklen_t>(len))
                 != 0)
                 return normalize_error(last_socket_error());
 
@@ -407,8 +398,7 @@ namespace socketpp
             int val = 0;
             socklen_t len = sizeof(val);
 
-            if (::getsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char *>(&val), &len)
-                == 0)
+            if (::getsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char *>(&val), &len) == 0)
                 ar.actual_send_buf = val;
         }
 
@@ -417,8 +407,7 @@ namespace socketpp
             int val = 0;
             socklen_t len = sizeof(val);
 
-            if (::getsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char *>(&val), &len)
-                == 0)
+            if (::getsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char *>(&val), &len) == 0)
                 ar.actual_recv_buf = val;
         }
 

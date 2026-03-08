@@ -218,7 +218,10 @@ namespace socketpp
 
 #if defined(SOCKETPP_OS_WINDOWS)
         auto n = ::recv(
-            static_cast<SOCKET>(impl_->sock.native_handle()), static_cast<char *>(buf), static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))), flags);
+            static_cast<SOCKET>(impl_->sock.native_handle()),
+            static_cast<char *>(buf),
+            static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))),
+            flags);
 #else
         auto n = ::recv(static_cast<int>(impl_->sock.native_handle()), buf, len, flags);
 #endif
@@ -311,7 +314,10 @@ namespace socketpp
 
 #if defined(SOCKETPP_OS_WINDOWS)
         auto n = ::recv(
-            static_cast<SOCKET>(impl_->sock.native_handle()), static_cast<char *>(buf), static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))), flags);
+            static_cast<SOCKET>(impl_->sock.native_handle()),
+            static_cast<char *>(buf),
+            static_cast<int>((std::min)(len, static_cast<size_t>(INT_MAX))),
+            flags);
 #else
         auto n = ::recv(static_cast<int>(impl_->sock.native_handle()), buf, len, flags);
 #endif
