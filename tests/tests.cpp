@@ -1016,7 +1016,7 @@ void test_event_loop_defer_timer_fires()
     socketpp::event_loop loop;
     bool fired = false;
 
-    loop.defer(
+    auto h = loop.defer(
         std::chrono::milliseconds(50),
         [&]()
         {
@@ -1025,6 +1025,7 @@ void test_event_loop_defer_timer_fires()
         });
 
     loop.run();
+    (void)h;
     CHECK(fired);
 }
 
@@ -1033,16 +1034,18 @@ void test_event_loop_defer_order_by_delay()
     socketpp::event_loop loop;
     std::string order;
 
-    loop.defer(
+    auto h1 = loop.defer(
         std::chrono::milliseconds(100),
         [&]()
         {
             order += "B";
             loop.stop();
         });
-    loop.defer(std::chrono::milliseconds(30), [&]() { order += "A"; });
+    auto h2 = loop.defer(std::chrono::milliseconds(30), [&]() { order += "A"; });
 
     loop.run();
+    (void)h1;
+    (void)h2;
     CHECK(order == "AB");
 }
 
@@ -1074,10 +1077,12 @@ void test_event_loop_repeat_timer_cancel()
 
     auto handle = loop.repeat(std::chrono::milliseconds(20), [&]() { ++count; });
 
-    loop.defer(std::chrono::milliseconds(80), [&]() { handle.cancel(); });
-    loop.defer(std::chrono::milliseconds(150), [&]() { loop.stop(); });
+    auto d1 = loop.defer(std::chrono::milliseconds(80), [&]() { handle.cancel(); });
+    auto d2 = loop.defer(std::chrono::milliseconds(150), [&]() { loop.stop(); });
 
     loop.run();
+    (void)d1;
+    (void)d2;
     CHECK(count < 10);
 }
 
@@ -1190,9 +1195,10 @@ void test_event_loop_tcp_accept()
             client.close();
         });
 
-    loop.defer(std::chrono::milliseconds(5000), [&loop]() { loop.stop(); });
+    auto timeout = loop.defer(std::chrono::milliseconds(5000), [&loop]() { loop.stop(); });
 
     loop.run();
+    (void)timeout;
     client_thread.join();
 
     CHECK(accepted);

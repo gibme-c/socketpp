@@ -52,24 +52,55 @@ namespace socketpp
 
     // ── Timer Handle ─────────────────────────────────────────────────────────────
 
-    /// @brief Cancellable handle to a scheduled timer.
+    /// @brief RAII cancellable handle to a scheduled timer.
     ///
     /// Returned by event_loop::defer() and event_loop::repeat(). The handle
     /// stores the timer's ID and a cancellation function that, when invoked,
     /// removes the timer from the dispatcher.
     ///
-    /// @note timer_handle is move-only in spirit (the cancel function captures
-    ///       a reference to the event loop), but is technically copyable. Copying
-    ///       a handle and cancelling from both copies is safe -- the second cancel
-    ///       is a no-op because the internal state is cleared after the first.
+    /// timer_handle is move-only. When the handle is destroyed, the timer is
+    /// automatically cancelled if still active. Use release() to detach the
+    /// handle without cancelling (fire-and-forget).
     ///
     /// @warning The handle holds a raw pointer to the event_loop's dispatcher.
-    ///          Do not call cancel() after the event_loop has been destroyed.
+    ///          Do not let the handle outlive the event_loop.
     class timer_handle
     {
       public:
         /// @brief Constructs an empty (invalid) timer handle.
         timer_handle() noexcept: id_(0), cancel_fn_(nullptr) {}
+
+        /// @brief Destructor. Cancels the timer if still active.
+        ~timer_handle() noexcept
+        {
+            cancel();
+        }
+
+        /// @brief Move constructor. Transfers ownership from other.
+        timer_handle(timer_handle &&other) noexcept:
+            id_(other.id_), cancel_fn_(std::move(other.cancel_fn_))
+        {
+            other.id_ = 0;
+            other.cancel_fn_ = nullptr;
+        }
+
+        /// @brief Move assignment. Cancels any existing timer, then transfers ownership.
+        timer_handle &operator=(timer_handle &&other) noexcept
+        {
+            if (this != &other)
+            {
+                cancel();
+                id_ = other.id_;
+                cancel_fn_ = std::move(other.cancel_fn_);
+                other.id_ = 0;
+                other.cancel_fn_ = nullptr;
+            }
+
+            return *this;
+        }
+
+        timer_handle(const timer_handle &) = delete;
+        timer_handle &operator=(const timer_handle &) = delete;
 
         /// @brief Returns the underlying timer identifier.
         /// @return The timer_id, or 0 if the handle is empty or already cancelled.
@@ -80,9 +111,9 @@ namespace socketpp
 
         /// @brief Cancels the timer.
         ///
-        /// If the timer has already fired (one-shot) or been cancelled, this is a
-        /// no-op. After cancellation, the handle becomes empty (id() returns 0 and
-        /// operator bool() returns false).
+        /// If the timer has already fired (one-shot), been cancelled, or been
+        /// released, this is a no-op. After cancellation, the handle becomes
+        /// empty (id() returns 0 and operator bool() returns false).
         void cancel() noexcept
         {
             if (cancel_fn_)
@@ -91,6 +122,20 @@ namespace socketpp
                 cancel_fn_ = nullptr;
                 id_ = 0;
             }
+        }
+
+        /// @brief Releases ownership of the timer without cancelling it.
+        ///
+        /// After this call the handle becomes empty. The timer continues to
+        /// run until it fires (one-shot) or is cancelled via another mechanism.
+        ///
+        /// @return The timer_id that was held, or 0 if the handle was empty.
+        timer_id release() noexcept
+        {
+            auto tid = id_;
+            id_ = 0;
+            cancel_fn_ = nullptr;
+            return tid;
         }
 
         /// @brief Tests whether this handle refers to an active timer.

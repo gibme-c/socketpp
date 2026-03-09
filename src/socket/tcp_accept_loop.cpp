@@ -70,7 +70,7 @@ namespace socketpp
 
                             loop.defer(
                                 std::chrono::milliseconds(delay),
-                                [&loop, listen_fd, backoff_ms]() { loop.io().modify(listen_fd, io_event::readable); });
+                                [&loop, listen_fd, backoff_ms]() { loop.io().modify(listen_fd, io_event::readable); }).release();
 
                             handler(ec, Addr {});
 

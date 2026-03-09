@@ -250,7 +250,7 @@ namespace socketpp::detail
                 [this, delay, cb = std::move(cb), p, sq]() mutable
                 {
                     auto h = loop_->defer(delay, [sq, cb = std::move(cb)]() { sq->submit(cb); });
-                    p->set_value(h);
+                    p->set_value(std::move(h));
                 });
 
             return f.get();
@@ -266,7 +266,7 @@ namespace socketpp::detail
                 [this, interval, cb = std::move(cb), p, sq]() mutable
                 {
                     auto h = loop_->repeat(interval, [sq, cb = std::move(cb)]() { sq->submit(cb); });
-                    p->set_value(h);
+                    p->set_value(std::move(h));
                 });
 
             return f.get();
