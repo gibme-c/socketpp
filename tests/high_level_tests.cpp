@@ -32,7 +32,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <socketpp.hpp>
 #include <string>
@@ -1457,6 +1459,162 @@ void test_dgram4_peer_timer_post()
 }
 
 // ===========================================================================
+// dgram4 multicast teardown
+// ===========================================================================
+
+void test_dgram4_multicast_teardown()
+{
+    const uint16_t port = 19910;
+
+    socketpp::dgram_config config;
+    config.sock_opts.multicast_join(
+        socketpp::inet4_address("239.255.0.1", 0), socketpp::inet4_address("0.0.0.0", 0));
+    config.sock_opts.multicast_loop(true);
+
+    auto r = socketpp::dgram4::create(socketpp::inet4_address::any(port), config);
+
+    if (!r)
+    {
+        std::cerr << "(create failed, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    // Heap-allocate so we can destroy from another thread
+    auto server = std::make_unique<socketpp::dgram4>(std::move(r.value()));
+
+    std::atomic<bool> data_armed {false};
+    server->on_data(
+        [&data_armed](const char *, size_t, const socketpp::inet4_address &) {
+            data_armed.store(true, std::memory_order_relaxed);
+        });
+
+    platform_sleep_ms(50);
+
+    // Destroy via std::async with timeout to detect hang
+    auto fut = std::async(
+        std::launch::async,
+        [&server]()
+        {
+            server.reset();
+        });
+
+    auto status = fut.wait_for(std::chrono::seconds(5));
+    CHECK_MSG(status == std::future_status::ready, "dgram4 multicast destructor should not hang");
+}
+
+// ===========================================================================
+// dgram6 multicast teardown
+// ===========================================================================
+
+void test_dgram6_multicast_teardown()
+{
+    const uint16_t port = 19911;
+
+    auto mcast_r = socketpp::inet6_address::parse("ff02::1", 0);
+    if (!mcast_r)
+    {
+        std::cerr << "(parse failed, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    socketpp::dgram_config config;
+    config.sock_opts.ipv6_only(true);
+    config.sock_opts.multicast_join(mcast_r.value(), socketpp::inet6_address::any(0));
+    config.sock_opts.multicast_loop_v6(true);
+
+    auto r = socketpp::dgram6::create(socketpp::inet6_address::any(port), config);
+
+    if (!r)
+    {
+        std::cerr << "(create failed, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::make_unique<socketpp::dgram6>(std::move(r.value()));
+
+    std::atomic<bool> data_armed {false};
+    server->on_data(
+        [&data_armed](const char *, size_t, const socketpp::inet6_address &) {
+            data_armed.store(true, std::memory_order_relaxed);
+        });
+
+    platform_sleep_ms(50);
+
+    auto fut = std::async(
+        std::launch::async,
+        [&server]()
+        {
+            server.reset();
+        });
+
+    auto status = fut.wait_for(std::chrono::seconds(5));
+    CHECK_MSG(status == std::future_status::ready, "dgram6 multicast destructor should not hang");
+}
+
+// ===========================================================================
+// dgram4 multicast recv (confirms join-after-bind works)
+// ===========================================================================
+
+void test_dgram4_multicast_recv()
+{
+    const uint16_t port = 19912;
+    const auto mcast_group = socketpp::inet4_address("239.255.0.2", port);
+    const auto any_iface = socketpp::inet4_address("0.0.0.0", 0);
+
+    socketpp::dgram_config config;
+    config.sock_opts.multicast_join(mcast_group, any_iface);
+    config.sock_opts.multicast_loop(true);
+
+    auto r = socketpp::dgram4::create(socketpp::inet4_address::any(port), config);
+
+    if (!r)
+    {
+        std::cerr << "(create failed, skipping) ";
+        CHECK(true);
+        return;
+    }
+
+    auto server = std::move(r.value());
+
+    std::atomic<bool> received {false};
+    std::mutex recv_mutex;
+    std::string received_data;
+
+    server.on_data(
+        [&received, &recv_mutex, &received_data](const char *data, size_t len, const socketpp::inet4_address &)
+        {
+            std::lock_guard<std::mutex> lock(recv_mutex);
+            received_data.assign(data, len);
+            received.store(true, std::memory_order_relaxed);
+        });
+
+    platform_sleep_ms(50);
+
+    // Send to multicast group from an ephemeral sender
+    auto sender_r = socketpp::dgram4::create(socketpp::inet4_address::any(0));
+    CHECK_MSG(sender_r, "sender should create");
+    if (!sender_r)
+        return;
+
+    auto sender = std::move(sender_r.value());
+    const std::string msg = "multicast-hello";
+    bool sent = sender.send_to(msg.data(), msg.size(), mcast_group);
+    CHECK_MSG(sent, "multicast send should succeed");
+
+    auto ok = wait_for(received, 5000);
+    CHECK_MSG(ok, "should receive multicast datagram");
+
+    if (ok)
+    {
+        std::lock_guard<std::mutex> lock(recv_mutex);
+        CHECK(received_data == msg);
+    }
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -1547,6 +1705,15 @@ int main()
 
     std::cerr << "\n--- dgram4 peer timer/post ---\n";
     RUN_TEST(test_dgram4_peer_timer_post);
+
+    std::cerr << "\n--- dgram4 multicast teardown ---\n";
+    RUN_TEST(test_dgram4_multicast_teardown);
+
+    std::cerr << "\n--- dgram6 multicast teardown ---\n";
+    RUN_TEST(test_dgram6_multicast_teardown);
+
+    std::cerr << "\n--- dgram4 multicast recv ---\n";
+    RUN_TEST(test_dgram4_multicast_recv);
 
     std::cerr << "\n" << g_test_count << " checks, " << g_fail_count << " failures\n";
     return g_fail_count > 0 ? 1 : 0;

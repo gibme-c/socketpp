@@ -484,6 +484,12 @@ namespace socketpp
 
         result<apply_result> apply_to(socket_t handle) const noexcept;
 
+        result<apply_result> apply_pre_bind(socket_t handle) const noexcept;
+
+        result<void> apply_post_bind(socket_t handle) const noexcept;
+
+        result<void> leave_all_multicast(socket_t handle) const noexcept;
+
         // ── Query ────────────────────────────────────────────────────────────
 
         bool has_send_buf() const noexcept
@@ -494,6 +500,11 @@ namespace socketpp
         bool has_recv_buf() const noexcept
         {
             return has_recv_buf_;
+        }
+
+        bool has_post_bind_opts() const noexcept
+        {
+            return has_multicast_join_;
         }
 
       private:
@@ -511,6 +522,7 @@ namespace socketpp
         bool has_send_buf_ = false;
         bool has_recv_buf_ = false;
         bool has_reuse_addr_ = false;
+        bool has_multicast_join_ = false;
 
         void push_int(socket_option_id id, int value, bool available)
         {
@@ -524,6 +536,9 @@ namespace socketpp
 
         void push_multicast(socket_option_id id, const sock_address &group, const sock_address &iface)
         {
+            if (id == socket_option_id::multicast_join)
+                has_multicast_join_ = true;
+
             option_entry e;
             e.id = id;
             e.platform_available = true;

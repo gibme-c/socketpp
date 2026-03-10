@@ -46,7 +46,7 @@ namespace socketpp
 
         *static_cast<socket *>(this) = std::move(r.value());
 
-        auto apply_r = opts.apply_to(native_handle());
+        auto apply_r = opts.apply_pre_bind(native_handle());
 
         if (!apply_r)
         {
@@ -60,6 +60,14 @@ namespace socketpp
         {
             close();
             return bind_r.error();
+        }
+
+        auto post_r = opts.apply_post_bind(native_handle());
+
+        if (!post_r)
+        {
+            close();
+            return post_r.error();
         }
 
         return {};
