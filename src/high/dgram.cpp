@@ -80,6 +80,7 @@ namespace socketpp
             std::unique_ptr<detail::thread_pool> pool;
             std::unique_ptr<detail::serial_queue> serial; ///< Serializes user callbacks for this dgram.
             Socket socket;
+            socket_options applied_opts;
 
             typename DgramType::data_handler on_data_cb;
             typename DgramType::batch_data_handler on_data_batch_cb;
@@ -129,6 +130,7 @@ namespace socketpp
                 if (!r)
                     return r;
 
+                self.applied_opts = effective_opts;
                 self.socket.set_non_blocking(true);
 
                 self.pool = std::make_unique<detail::thread_pool>(config.worker_threads);
@@ -612,6 +614,17 @@ namespace socketpp
             /// case where the loop hasn't started polling yet.
             void do_destroy()
             {
+                // Leave all multicast groups before shutdown. setsockopt may
+                // fail on a shut-down socket, so this must come first.
+                if (socket.is_open())
+                    applied_opts.leave_all_multicast(socket.native_handle());
+
+                // Shutdown the socket to unblock any pending recvfrom() on
+                // Windows where closesocket() alone may not suffice for
+                // multicast-joined sockets.
+                if (socket.is_open())
+                    socket.shutdown(shutdown_mode::both);
+
                 // Relinquish all claimed peers inline (we haven't stopped the
                 // loop yet, so fd removal posts will execute).
                 loop.post(
