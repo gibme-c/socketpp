@@ -1562,10 +1562,10 @@ void test_dgram4_multicast_recv()
 {
     const uint16_t port = 19912;
     const auto mcast_group = socketpp::inet4_address("239.255.0.2", port);
-    const auto any_iface = socketpp::inet4_address("0.0.0.0", 0);
+    const auto loopback = socketpp::inet4_address("127.0.0.1", 0);
 
     socketpp::dgram_config config;
-    config.sock_opts.multicast_join(mcast_group, any_iface);
+    config.sock_opts.multicast_join(mcast_group, loopback);
     config.sock_opts.multicast_loop(true);
 
     auto r = socketpp::dgram4::create(socketpp::inet4_address::any(port), config);
@@ -1593,8 +1593,12 @@ void test_dgram4_multicast_recv()
 
     platform_sleep_ms(50);
 
-    // Send to multicast group from an ephemeral sender
-    auto sender_r = socketpp::dgram4::create(socketpp::inet4_address::any(0));
+    // Send to multicast group from an ephemeral sender with explicit loopback interface
+    socketpp::dgram_config sender_config;
+    sender_config.sock_opts.multicast_loop(true);
+    sender_config.sock_opts.multicast_interface(loopback);
+
+    auto sender_r = socketpp::dgram4::create(socketpp::inet4_address::any(0), sender_config);
     CHECK_MSG(sender_r, "sender should create");
     if (!sender_r)
         return;

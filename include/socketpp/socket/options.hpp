@@ -71,6 +71,8 @@ namespace socketpp
         multicast_loop,
         multicast_ttl_v6,
         multicast_loop_v6,
+        multicast_if,
+        multicast_if_v6,
     };
 
     // ── Small Vector (inline storage for typical option counts) ──────────────────
@@ -477,6 +479,30 @@ namespace socketpp
         socket_options &multicast_loop_v6(bool enable)
         {
             push_int(socket_option_id::multicast_loop_v6, enable ? 1 : 0, true);
+            return *this;
+        }
+
+        socket_options &multicast_interface(const sock_address &iface)
+        {
+            option_entry e;
+            e.id = socket_option_id::multicast_if;
+            e.platform_available = true;
+            e.data.resize(128 + sizeof(uint32_t));
+            std::memcpy(e.data.data(), iface.data(), iface.size());
+            uint32_t len = iface.size();
+            std::memcpy(e.data.data() + 128, &len, sizeof(len));
+            entries_.push_back(std::move(e));
+            return *this;
+        }
+
+        socket_options &multicast_interface_v6(unsigned int if_index)
+        {
+            option_entry e;
+            e.id = socket_option_id::multicast_if_v6;
+            e.platform_available = true;
+            e.data.resize(sizeof(unsigned int));
+            std::memcpy(e.data.data(), &if_index, sizeof(if_index));
+            entries_.push_back(std::move(e));
             return *this;
         }
 

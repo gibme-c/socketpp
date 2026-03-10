@@ -208,6 +208,29 @@ namespace socketpp
         }
 #endif
 
+        result<void> apply_multicast_if(socket_t handle, const std::vector<uint8_t> &data) noexcept
+        {
+            if (data.size() < 128 + sizeof(uint32_t))
+                return make_error_code(errc::invalid_state);
+
+            const auto *sa = reinterpret_cast<const sockaddr_in *>(data.data());
+            struct in_addr addr;
+            std::memcpy(&addr, &sa->sin_addr, sizeof(addr));
+
+            return set_bytes_opt(handle, IPPROTO_IP, IP_MULTICAST_IF, &addr, sizeof(addr));
+        }
+
+        result<void> apply_multicast_if_v6(socket_t handle, const std::vector<uint8_t> &data) noexcept
+        {
+            if (data.size() < sizeof(unsigned int))
+                return make_error_code(errc::invalid_state);
+
+            unsigned int if_index = 0;
+            std::memcpy(&if_index, data.data(), sizeof(if_index));
+
+            return set_int_opt(handle, IPPROTO_IPV6, IPV6_MULTICAST_IF, static_cast<int>(if_index));
+        }
+
         bool is_multicast_entry(socket_option_id id) noexcept
         {
             return id == socket_option_id::multicast_join || id == socket_option_id::multicast_leave;
@@ -374,6 +397,14 @@ namespace socketpp
 
                 case socket_option_id::multicast_loop_v6:
                     rc = set_int_opt(handle, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, val);
+                    break;
+
+                case socket_option_id::multicast_if:
+                    rc = apply_multicast_if(handle, entry.data);
+                    break;
+
+                case socket_option_id::multicast_if_v6:
+                    rc = apply_multicast_if_v6(handle, entry.data);
                     break;
             }
 
@@ -580,6 +611,14 @@ namespace socketpp
 
                 case socket_option_id::multicast_loop_v6:
                     rc = set_int_opt(handle, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, val);
+                    break;
+
+                case socket_option_id::multicast_if:
+                    rc = apply_multicast_if(handle, entry.data);
+                    break;
+
+                case socket_option_id::multicast_if_v6:
+                    rc = apply_multicast_if_v6(handle, entry.data);
                     break;
             }
 
