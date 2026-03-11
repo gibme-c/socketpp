@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <socketpp/event/dispatcher.hpp>
 #include <socketpp/socket/udp.hpp>
 #include <vector>
 
@@ -115,6 +116,21 @@ namespace socketpp
             return make_error_code(errc::invalid_state);
 
         spin_guard lock(recv_lock_);
+
+#if defined(SOCKETPP_OS_WINDOWS)
+        // If registered with an IOCP dispatcher, retrieve pre-buffered datagrams
+        // from overlapped WSARecvFrom completions instead of calling ::recvfrom().
+        if (dispatcher_)
+        {
+            auto r = dispatcher_->retrieve_dgram(handle_, buf, len, src_out);
+
+            if (r)
+                return r;
+
+            // Queue empty — return would_block to signal drain complete.
+            return make_error_code(errc::would_block);
+        }
+#endif
 
         sock_address sa;
         auto sa_len = static_cast<socklen_t>(sa.capacity());
