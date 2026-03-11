@@ -13,3 +13,11 @@ add_executable(high_level_tests high_level_tests.cpp)
 target_link_libraries(high_level_tests PRIVATE socketpp)
 socketpp_configure_executable(high_level_tests)
 add_test(NAME high_level_tests COMMAND high_level_tests)
+
+add_executable(udp_throughput_bench udp_throughput_bench.cpp)
+target_link_libraries(udp_throughput_bench PRIVATE socketpp)
+socketpp_configure_executable(udp_throughput_bench)
+
+add_executable(tcp_throughput_bench tcp_throughput_bench.cpp)
+target_link_libraries(tcp_throughput_bench PRIVATE socketpp)
+socketpp_configure_executable(tcp_throughput_bench)
