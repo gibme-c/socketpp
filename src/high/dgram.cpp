@@ -334,6 +334,11 @@ namespace socketpp
                 loop.post(
                     [this, fd]()
                     {
+#if defined(SOCKETPP_OS_WINDOWS)
+                        // Wire dispatcher pointer so recv_from_raw() retrieves
+                        // pre-buffered datagrams from IOCP completions.
+                        this->socket.set_dispatcher(&loop.io());
+#endif
                         loop.io().add(
                             fd,
                             io_event::readable,
@@ -356,7 +361,16 @@ namespace socketpp
                 paused.store(true, std::memory_order_relaxed);
 
                 auto fd = socket.native_handle();
+
+#if defined(SOCKETPP_OS_WINDOWS)
+                // On IOCP, use modify() to drop readable interest instead of remove().
+                // This avoids destroying per_socket_state (and its overlapped recv slots),
+                // which prevents a race where CancelIoEx'd completions match re-allocated
+                // slot memory after a subsequent add().
+                loop.post([this, fd]() { loop.io().modify(fd, io_event::none); });
+#else
                 loop.post([this, fd]() { loop.io().remove(fd); });
+#endif
             }
 
             /// Re-register readable interest with the event loop.
@@ -369,6 +383,11 @@ namespace socketpp
 
                 auto fd = socket.native_handle();
 
+#if defined(SOCKETPP_OS_WINDOWS)
+                // On IOCP, use modify() to restore readable interest. The per_socket_state
+                // and callback were preserved from the original add() in arm().
+                loop.post([this, fd]() { loop.io().modify(fd, io_event::readable); });
+#else
                 loop.post(
                     [this, fd]()
                     {
@@ -383,6 +402,7 @@ namespace socketpp
                                 handle_readable();
                             });
                     });
+#endif
             }
 
             /// Set on_data callback — clears on_data_batch (mutually exclusive).
@@ -644,9 +664,17 @@ namespace socketpp
 
                 if (socket.is_open())
                 {
-                    if (armed.load(std::memory_order_relaxed) && !paused.load(std::memory_order_relaxed))
+#if defined(SOCKETPP_OS_WINDOWS)
+                    // On IOCP, pause uses modify() instead of remove(), so the
+                    // socket is still registered even when paused. Always remove.
+                    if (armed.load(std::memory_order_relaxed))
                         loop.io().remove(socket.native_handle());
 
+                    this->socket.set_dispatcher(nullptr);
+#else
+                    if (armed.load(std::memory_order_relaxed) && !paused.load(std::memory_order_relaxed))
+                        loop.io().remove(socket.native_handle());
+#endif
                     socket.close();
                 }
 

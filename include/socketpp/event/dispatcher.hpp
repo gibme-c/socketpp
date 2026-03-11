@@ -44,6 +44,7 @@
 #include <functional>
 #include <memory>
 #include <socketpp/event/timer.hpp>
+#include <socketpp/net/address.hpp>
 #include <socketpp/platform/error.hpp>
 #include <socketpp/platform/types.hpp>
 
@@ -234,6 +235,27 @@ namespace socketpp
         ///
         /// @param id The timer identifier returned by schedule_timer().
         virtual void cancel_timer(timer_id id) = 0;
+
+        /// @brief Retrieves a pre-buffered datagram from a completion-based dispatcher.
+        ///
+        /// On IOCP (Windows), overlapped WSARecvFrom delivers datagrams into internal
+        /// buffers. This method retrieves the next buffered datagram for the given socket.
+        /// The default implementation returns would_block, which is correct for
+        /// readiness-based dispatchers (epoll, kqueue) that never buffer data.
+        ///
+        /// @param fd      The socket descriptor.
+        /// @param buf     Buffer to copy datagram data into.
+        /// @param len     Size of the buffer.
+        /// @param src_out Receives the source address of the datagram.
+        /// @return Number of bytes copied, or errc::would_block if no datagram is available.
+        virtual result<size_t> retrieve_dgram(socket_t fd, void *buf, size_t len, sock_address &src_out)
+        {
+            (void)fd;
+            (void)buf;
+            (void)len;
+            (void)src_out;
+            return make_error_code(errc::would_block);
+        }
 
         /// @brief Creates the platform-appropriate dispatcher implementation.
         ///

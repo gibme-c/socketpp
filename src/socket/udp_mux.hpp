@@ -153,7 +153,32 @@ namespace socketpp::detail
             mux->local_addr_ = local_addr;
             registry_.emplace(local_addr, mux);
 
-            mux->poll_thread_ = std::thread([mux]() { mux->poll_loop(); });
+            // Create a private IOCP for the mux socket.
+            mux->iocp_ = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+
+            if (mux->iocp_ == nullptr)
+            {
+                mux->socket_.close();
+                return nullptr;
+            }
+
+            // Associate the mux socket with the IOCP.
+            const auto mux_key = static_cast<ULONG_PTR>(mux->socket_.native_handle());
+            HANDLE h = ::CreateIoCompletionPort(
+                reinterpret_cast<HANDLE>(mux->socket_.native_handle()), mux->iocp_, mux_key, 0);
+
+            if (h == nullptr)
+            {
+                ::CloseHandle(mux->iocp_);
+                mux->iocp_ = nullptr;
+                mux->socket_.close();
+                return nullptr;
+            }
+
+            // Arm the initial overlapped WSARecvFrom.
+            mux->arm_overlapped_recv();
+
+            mux->poll_thread_ = std::thread([mux]() { mux->iocp_loop(); });
 
             return mux;
         }
@@ -162,8 +187,22 @@ namespace socketpp::detail
         {
             stop_requested_.store(true, std::memory_order_relaxed);
 
+            // Cancel pending overlapped recv to unblock the IOCP wait thread.
+            if (socket_.is_open() && iocp_ != nullptr)
+                ::CancelIoEx(reinterpret_cast<HANDLE>(socket_.native_handle()), nullptr);
+
+            // Post a stop sentinel to wake the IOCP thread.
+            if (iocp_ != nullptr)
+                ::PostQueuedCompletionStatus(iocp_, 0, STOP_KEY, nullptr);
+
             if (poll_thread_.joinable())
                 poll_thread_.join();
+
+            if (iocp_ != nullptr)
+            {
+                ::CloseHandle(iocp_);
+                iocp_ = nullptr;
+            }
 
             scoped_lock<spinlock> lock(registry_mutex_);
 
@@ -317,18 +356,96 @@ namespace socketpp::detail
       private:
         udp_mux() = default;
 
-        void poll_loop()
-        {
-            WSAPOLLFD pfd {};
-            pfd.fd = static_cast<SOCKET>(socket_.native_handle());
-            pfd.events = POLLIN;
+        /// Sentinel completion key posted to stop the IOCP wait loop.
+        static constexpr ULONG_PTR STOP_KEY = ~static_cast<ULONG_PTR>(0);
 
+        /// Arms an overlapped WSARecvFrom on the mux socket using recv_buf_.
+        void arm_overlapped_recv()
+        {
+            ::ZeroMemory(&recv_ov_, sizeof(recv_ov_));
+            recv_src_len_ = sizeof(recv_src_);
+
+            WSABUF wsa_buf = {};
+            wsa_buf.buf = recv_buf_;
+            wsa_buf.len = sizeof(recv_buf_);
+            DWORD bytes = 0;
+            DWORD flags = 0;
+
+            const int ret = ::WSARecvFrom(
+                static_cast<SOCKET>(socket_.native_handle()),
+                &wsa_buf,
+                1,
+                &bytes,
+                &flags,
+                reinterpret_cast<sockaddr *>(&recv_src_),
+                &recv_src_len_,
+                &recv_ov_,
+                nullptr);
+
+            if (ret == SOCKET_ERROR)
+            {
+                const int err = ::WSAGetLastError();
+
+                if (err != WSA_IO_PENDING)
+                    return; // Socket may be closing; will not re-arm.
+            }
+            // Synchronous completion or WSA_IO_PENDING: completion will be posted to IOCP.
+        }
+
+        /// IOCP-based event loop that replaces the old WSAPoll polling loop.
+        /// Blocks on GetQueuedCompletionStatusEx until a datagram completion
+        /// or stop sentinel arrives.
+        void iocp_loop()
+        {
             while (!stop_requested_.load(std::memory_order_relaxed))
             {
-                auto rc = ::WSAPoll(&pfd, 1, 50);
+                OVERLAPPED_ENTRY entries[16];
+                ULONG count = 0;
 
-                if (rc > 0 && (pfd.revents & POLLIN))
-                    on_readable();
+                BOOL ok = ::GetQueuedCompletionStatusEx(iocp_, entries, 16, &count, INFINITE, FALSE);
+
+                if (!ok)
+                    continue;
+
+                for (ULONG i = 0; i < count; ++i)
+                {
+                    if (entries[i].lpCompletionKey == STOP_KEY)
+                        return;
+
+                    // Datagram completion on the mux socket.
+                    DWORD actual_bytes = 0;
+                    DWORD flags = 0;
+
+                    BOOL gor = ::WSAGetOverlappedResult(
+                        static_cast<SOCKET>(socket_.native_handle()), &recv_ov_, &actual_bytes, FALSE, &flags);
+
+                    if (gor && actual_bytes > 0)
+                    {
+                        sock_address src_sa;
+                        std::memcpy(src_sa.data(), &recv_src_, recv_src_len_);
+                        src_sa.set_size(static_cast<uint32_t>(recv_src_len_));
+
+                        Addr src;
+                        std::memcpy(&src, src_sa.data(), sizeof(src));
+
+                        scoped_lock<spinlock> lock(mutex_);
+
+                        auto it = peers_.find(src);
+
+                        if (it != peers_.end())
+                        {
+                            it->second.callback(recv_buf_, static_cast<size_t>(actual_bytes));
+                        }
+                        else if (catch_all_)
+                        {
+                            catch_all_(recv_buf_, static_cast<size_t>(actual_bytes), src);
+                        }
+                    }
+
+                    // Re-arm for the next datagram.
+                    if (!stop_requested_.load(std::memory_order_relaxed))
+                        arm_overlapped_recv();
+                }
             }
         }
 
@@ -346,10 +463,13 @@ namespace socketpp::detail
         spinlock mutex_; ///< Protects peers_ and catch_all_.
         spinlock send_mutex_; ///< Protects send_to() from concurrent access.
 
-        // 64 KB member buffer for receiving datagrams. Allocated as part of the
-        // mux object to avoid large stack frames on each on_readable() call.
+        // 64 KB member buffer for receiving datagrams via overlapped WSARecvFrom.
         char recv_buf_[65536];
+        OVERLAPPED recv_ov_ = {};
+        sockaddr_storage recv_src_ = {};
+        INT recv_src_len_ = sizeof(sockaddr_storage);
 
+        HANDLE iocp_ = nullptr; ///< Private IOCP handle for mux socket.
         std::thread poll_thread_;
         std::atomic<bool> stop_requested_ {false};
 

@@ -125,16 +125,22 @@ namespace socketpp
 
         result<void> apply(const socket_options &opts) noexcept;
 
+        /// @brief Associates this socket with a dispatcher for pre-buffered I/O.
+        ///
+        /// On Windows, IOCP-registered UDP sockets use overlapped receives that
+        /// buffer datagrams inside the dispatcher. Setting the dispatcher pointer
+        /// enables recv_from_raw() to retrieve from that buffer instead of calling
+        /// ::recvfrom() directly.
+        void set_dispatcher(dispatcher *d) noexcept
+        {
+            dispatcher_ = d;
+        }
+
       protected:
         socket_t handle_ = invalid_socket;
         dispatcher *dispatcher_ = nullptr;
 
         std::function<void(socket_t)> on_close_deregister_;
-
-        void set_dispatcher(dispatcher *d) noexcept
-        {
-            dispatcher_ = d;
-        }
 
         dispatcher *get_dispatcher() const noexcept
         {
