@@ -238,12 +238,12 @@ A unified type for both server and client TCP connections. The role is determine
 auto r = socketpp::stream4::listen(
     socketpp::inet4_address::any(9000),
     socketpp::stream_listen_config{
-        .worker_threads = 4,          // thread pool size (0 = auto)
-        .max_write_buffer = 8 << 20,  // 8 MB max write queue per connection
-        .read_buffer_size = 32768,    // 32 KB read buffer per connection
+        .worker_threads = 4,           // thread pool size (0 = auto)
+        .max_write_buffer = 16 << 20,  // 16 MB max write queue per connection
+        .read_buffer_size = 65536,     // 64 KB read buffer per connection
         .sock_opts = socketpp::socket_options{}.reuse_addr(true).tcp_nodelay(true),
-        .backlog = 128,               // listen backlog
-        .max_connections = 10000      // 0 = unlimited
+        .backlog = 128,                // listen backlog
+        .max_connections = 10000       // 0 = unlimited
     });
 if (!r) { /* handle error */ return 1; }
 
@@ -266,7 +266,8 @@ server.resume();           // resume accepting
 auto h = server.defer(std::chrono::seconds(30), [] { /* one-shot */ });
 auto h2 = server.repeat(std::chrono::seconds(5), [] { /* recurring */ });
 server.post([] { /* fire-and-forget on thread pool */ });
-h.cancel();   // cancel a timer (no-op if already fired)
+h.cancel();    // cancel a timer (no-op if already fired)
+h2.release();  // detach handle without cancelling (fire-and-forget)
 ```
 
 **Connect mode (client):**
@@ -276,8 +277,10 @@ auto r = socketpp::stream4::connect(
     socketpp::inet4_address::loopback(9000),
     socketpp::stream_connect_config{
         .worker_threads = 0,
+        .max_write_buffer = 16 * 1024 * 1024, // 16 MB max write queue
+        .read_buffer_size = 65536,             // 64 KB read buffer
         .sock_opts = socketpp::socket_options{}.tcp_nodelay(true),
-        .connect_timeout = std::chrono::milliseconds(5000)
+        .connect_timeout = std::chrono::milliseconds(30000) // 30 second timeout
     });
 if (!r) { /* handle error */ return 1; }
 
@@ -297,6 +300,7 @@ Connection objects are passed by reference into `on_connect` callbacks. The stre
 ```cpp
 conn.on_data([&conn](const char *data, size_t len) {
     conn.send(data, len);       // queue data for writing (thread-safe)
+    conn.send("hello");         // string overload also available
 });
 
 conn.on_close([] {
@@ -350,7 +354,7 @@ sock.resume();      // resume reading
 sock.paused();      // check pause state
 ```
 
-`send_to()` is synchronous and returns `true` on success. Port 0 is supported for ephemeral port binding.
+`send_to()` is synchronous and returns `true` on success. Port 0 is supported for ephemeral port binding. `dgram4::create()` can be called with no arguments to bind to an ephemeral port on all interfaces.
 
 **Batch send/recv:**
 
@@ -379,7 +383,8 @@ auto r = sock.send_batch(entries); // result<int> -- number sent
 auto h = sock.defer(std::chrono::milliseconds(500), [] {
     std::cout << "fired once\n";
 });
-h.cancel(); // cancel before it fires (no-op if already fired)
+h.cancel();  // cancel before it fires (no-op if already fired)
+h.release(); // or detach: timer keeps running, handle becomes empty
 
 // Repeating timer -- fires at interval until cancelled
 auto h2 = sock.repeat(std::chrono::seconds(1), [] {
@@ -392,7 +397,7 @@ sock.post([] {
 });
 ```
 
-All timer and post callbacks run on the thread pool, never on the event loop thread.
+All timer and post callbacks run on the thread pool, never on the event loop thread. Timer handles are RAII -- if a handle goes out of scope without `release()`, the timer is automatically cancelled.
 
 ### dgram4_peer / dgram6_peer (Per-Peer UDP)
 
@@ -460,7 +465,7 @@ auto addr = socketpp::inet6_address::any(8080);              // [::]:8080
 auto addr = socketpp::inet6_address::parse("::1", 8080);    // result<inet6_address>
 ```
 
-`inet6_address` also provides `is_v4_mapped()`, `to_v4()`, `is_link_local()`, and `scope_id()` for link-local addresses.
+`inet6_address` also provides `is_v4_mapped()`, `to_v4()`, `is_link_local()`, `scope_id()`, `flowinfo()`, and `bytes()`. Link-local addresses require a scope ID -- pass it via `parse()` or the constructor.
 
 ### Socket Options
 
@@ -471,15 +476,40 @@ socketpp::socket_options opts;
 opts.reuse_addr(true)
     .tcp_nodelay(true)
     .keep_alive(true)
-    .keep_alive_idle(60)
-    .keep_alive_interval(10)
+    .keep_alive_idle(std::chrono::seconds(60))
+    .keep_alive_interval(std::chrono::seconds(10))
     .keep_alive_count(3)
     .recv_buf(262144)
     .send_buf(262144)
-    .linger_opt(true, 5);
+    .linger(true, 5);
+
+// Or use a buffer profile preset instead of manual recv_buf/send_buf:
+socketpp::socket_options wan_opts;
+wan_opts.buf_profile(socketpp::buf_profile::wan());  // 1 MB send + recv
 ```
 
-Options include `reuse_addr`, `reuse_port`, `exclusive_addr`, `tcp_nodelay`, `tcp_cork`, `tcp_fastopen`, `tcp_defer_accept`, `tcp_user_timeout`, `tcp_notsent_lowat`, `keep_alive` (with idle/interval/count), `recv_buf`, `send_buf`, `linger_opt`, `ipv6_only`, `ip_tos`, `broadcast`, and multicast options. Not all options are supported on all platforms -- unsupported options return `errc::option_not_supported`.
+Options include `reuse_addr`, `reuse_port`, `exclusive_addr`, `tcp_nodelay`, `tcp_cork`, `tcp_fastopen`, `tcp_defer_accept`, `tcp_user_timeout`, `tcp_notsent_lowat`, `keep_alive` (with idle/interval/count), `recv_buf`, `send_buf`, `buf_profile` (with presets: `localhost`, `lan`, `wan`, `high_bdp`, and `from_bdp()`), `linger`, `ipv6_only`, `ip_tos`, `broadcast`, and multicast options (`multicast_join`, `multicast_leave`, `multicast_ttl`, `multicast_loop`, `multicast_interface`, plus IPv6 variants). Not all options are supported on all platforms -- unsupported options return `errc::option_not_supported`.
+
+### Buffer Profiles
+
+`buf_profile` provides named presets for send/receive buffer sizing:
+
+```cpp
+socketpp::buf_profile::localhost()   // 256 KB -- loopback
+socketpp::buf_profile::lan()         // 512 KB -- local-area network
+socketpp::buf_profile::wan()         // 1 MB   -- wide-area network
+socketpp::buf_profile::high_bdp()    // 4 MB   -- high bandwidth-delay product
+
+// Or calculate from link characteristics (clamped to 4 KB .. 16 MB)
+auto profile = socketpp::buf_profile::from_bdp(
+    125'000'000,  // 1 Gbps in bytes/sec
+    0.050         // 50 ms RTT
+);  // yields ~6 MB buffers
+
+// Apply via socket_options
+socketpp::socket_options opts;
+opts.buf_profile(profile);
+```
 
 ### Error Handling
 
