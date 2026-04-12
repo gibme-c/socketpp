@@ -211,8 +211,8 @@ namespace socketpp::detail
                 // Allocate recv slots and arm overlapped WSARecvFrom operations.
                 if (has_event(interest, io_event::readable))
                 {
-                    sp->recv_slots = std::make_unique<per_socket_state::recv_slot[]>(
-                        per_socket_state::DGRAM_RECV_SLOTS);
+                    sp->recv_slots =
+                        std::make_unique<per_socket_state::recv_slot[]>(per_socket_state::DGRAM_RECV_SLOTS);
 
                     for (int i = 0; i < per_socket_state::DGRAM_RECV_SLOTS; ++i)
                         arm_recv_from(*sp, i);
@@ -252,8 +252,8 @@ namespace socketpp::detail
                 {
                     if (!state.recv_slots)
                     {
-                        state.recv_slots = std::make_unique<per_socket_state::recv_slot[]>(
-                            per_socket_state::DGRAM_RECV_SLOTS);
+                        state.recv_slots =
+                            std::make_unique<per_socket_state::recv_slot[]>(per_socket_state::DGRAM_RECV_SLOTS);
                     }
 
                     for (int i = 0; i < per_socket_state::DGRAM_RECV_SLOTS; ++i)
@@ -405,8 +405,8 @@ namespace socketpp::detail
                     DWORD actual_bytes = 0;
                     DWORD flags = 0;
 
-                    BOOL gor = ::WSAGetOverlappedResult(
-                        static_cast<SOCKET>(fd), &slot.ov, &actual_bytes, FALSE, &flags);
+                    BOOL gor =
+                        ::WSAGetOverlappedResult(static_cast<SOCKET>(fd), &slot.ov, &actual_bytes, FALSE, &flags);
 
                     if (gor && actual_bytes > 0)
                     {

@@ -36,13 +36,12 @@
 ///
 /// Defaults: 3 seconds, 65536 bytes per send chunk.
 
-#include <socketpp.hpp>
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <socketpp.hpp>
 #include <thread>
 
 int main(int argc, char *argv[])
@@ -72,15 +71,11 @@ int main(int argc, char *argv[])
 
     auto server = std::move(server_r.value());
 
-    std::atomic<uint64_t> total_bytes{0};
+    std::atomic<uint64_t> total_bytes {0};
 
     server.on_connect(
         [&](socketpp::stream4::connection &conn)
-        {
-            conn.on_data(
-                [&](const char *, size_t len)
-                { total_bytes.fetch_add(len, std::memory_order_relaxed); });
-        });
+        { conn.on_data([&](const char *, size_t len) { total_bytes.fetch_add(len, std::memory_order_relaxed); }); });
 
     // ── Client ──────────────────────────────────────────────────────────
 
@@ -94,7 +89,7 @@ int main(int argc, char *argv[])
 
     auto client = std::move(client_r.value());
 
-    std::atomic<bool> connected{false};
+    std::atomic<bool> connected {false};
     socketpp::stream4::connection *client_conn_ptr = nullptr;
 
     client.on_connect(
@@ -164,11 +159,11 @@ int main(int argc, char *argv[])
 
     std::fprintf(stderr, "\n");
     std::fprintf(stderr, "  duration:       %.2f s\n", secs);
-    std::fprintf(stderr, "  sent:           %llu bytes (%.1f Mbps)\n",
-        static_cast<unsigned long long>(sent_bytes), tx_mbps);
+    std::fprintf(
+        stderr, "  sent:           %llu bytes (%.1f Mbps)\n", static_cast<unsigned long long>(sent_bytes), tx_mbps);
     std::fprintf(stderr, "  send failures:  %llu\n", static_cast<unsigned long long>(send_failures));
-    std::fprintf(stderr, "  received:       %llu bytes (%.1f Mbps)\n",
-        static_cast<unsigned long long>(rx_bytes), rx_mbps);
+    std::fprintf(
+        stderr, "  received:       %llu bytes (%.1f Mbps)\n", static_cast<unsigned long long>(rx_bytes), rx_mbps);
     std::fprintf(stderr, "  throughput:     %.1f Mbps\n", rx_mbps);
 
     return 0;

@@ -1468,7 +1468,7 @@ void test_dgram4_multicast_teardown()
 
     socketpp::dgram_config config;
     config.sock_opts.multicast_join(
-        socketpp::inet4_address("239.255.0.1", 0), socketpp::inet4_address("0.0.0.0", 0));
+        socketpp::inet4_address::parse("239.255.0.1", 0).value(), socketpp::inet4_address::any(0));
     config.sock_opts.multicast_loop(true);
 
     auto r = socketpp::dgram4::create(socketpp::inet4_address::any(port), config);
@@ -1484,20 +1484,13 @@ void test_dgram4_multicast_teardown()
     auto server = std::make_unique<socketpp::dgram4>(std::move(r.value()));
 
     std::atomic<bool> data_armed {false};
-    server->on_data(
-        [&data_armed](const char *, size_t, const socketpp::inet4_address &) {
-            data_armed.store(true, std::memory_order_relaxed);
-        });
+    server->on_data([&data_armed](const char *, size_t, const socketpp::inet4_address &)
+                    { data_armed.store(true, std::memory_order_relaxed); });
 
     platform_sleep_ms(50);
 
     // Destroy via std::async with timeout to detect hang
-    auto fut = std::async(
-        std::launch::async,
-        [&server]()
-        {
-            server.reset();
-        });
+    auto fut = std::async(std::launch::async, [&server]() { server.reset(); });
 
     auto status = fut.wait_for(std::chrono::seconds(5));
     CHECK_MSG(status == std::future_status::ready, "dgram4 multicast destructor should not hang");
@@ -1536,19 +1529,12 @@ void test_dgram6_multicast_teardown()
     auto server = std::make_unique<socketpp::dgram6>(std::move(r.value()));
 
     std::atomic<bool> data_armed {false};
-    server->on_data(
-        [&data_armed](const char *, size_t, const socketpp::inet6_address &) {
-            data_armed.store(true, std::memory_order_relaxed);
-        });
+    server->on_data([&data_armed](const char *, size_t, const socketpp::inet6_address &)
+                    { data_armed.store(true, std::memory_order_relaxed); });
 
     platform_sleep_ms(50);
 
-    auto fut = std::async(
-        std::launch::async,
-        [&server]()
-        {
-            server.reset();
-        });
+    auto fut = std::async(std::launch::async, [&server]() { server.reset(); });
 
     auto status = fut.wait_for(std::chrono::seconds(5));
     CHECK_MSG(status == std::future_status::ready, "dgram6 multicast destructor should not hang");
@@ -1561,8 +1547,8 @@ void test_dgram6_multicast_teardown()
 void test_dgram4_multicast_recv()
 {
     const uint16_t port = 19912;
-    const auto mcast_group = socketpp::inet4_address("239.255.0.2", port);
-    const auto loopback = socketpp::inet4_address("127.0.0.1", 0);
+    const auto mcast_group = socketpp::inet4_address::parse("239.255.0.2", port).value();
+    const auto loopback = socketpp::inet4_address::loopback(0);
 
     socketpp::dgram_config config;
     config.sock_opts.multicast_join(mcast_group, loopback);
@@ -1616,6 +1602,53 @@ void test_dgram4_multicast_recv()
         std::lock_guard<std::mutex> lock(recv_mutex);
         CHECK(received_data == msg);
     }
+}
+
+// ===========================================================================
+// stream4 max_connections enforcement (audit INFO-1)
+// ===========================================================================
+
+void test_stream4_max_connections_enforcement()
+{
+    const uint16_t port = 0; // ephemeral
+
+    socketpp::stream_listen_config cfg;
+    cfg.max_connections = 2;
+
+    auto server_r = socketpp::stream4::listen(socketpp::inet4_address::loopback(port), cfg);
+    CHECK_MSG(server_r, "listen failed");
+    if (!server_r)
+        return;
+
+    auto &server = server_r.value();
+    const auto actual_port = server.local_addr().port();
+
+    std::atomic<int> connect_count {0};
+    server.on_connect(
+        [&connect_count](socketpp::stream4::connection &conn)
+        {
+            connect_count.fetch_add(1, std::memory_order_relaxed);
+            conn.on_data([](const char *, size_t) {});
+        });
+
+    platform_sleep_ms(50);
+
+    // Connect 3 clients; only 2 should be accepted
+    std::vector<socketpp::stream4> clients;
+    for (int i = 0; i < 3; ++i)
+    {
+        auto client_r = socketpp::stream4::connect(socketpp::inet4_address::loopback(actual_port));
+        if (client_r)
+        {
+            auto &client = client_r.value();
+            client.on_connect([](socketpp::stream4::connection &) {});
+            clients.push_back(std::move(client));
+        }
+    }
+
+    platform_sleep_ms(500);
+
+    CHECK_MSG(connect_count.load(std::memory_order_relaxed) <= 2, "more than max_connections accepted");
 }
 
 // ===========================================================================
@@ -1718,6 +1751,9 @@ int main()
 
     std::cerr << "\n--- dgram4 multicast recv ---\n";
     RUN_TEST(test_dgram4_multicast_recv);
+
+    std::cerr << "\n--- stream4 max_connections ---\n";
+    RUN_TEST(test_stream4_max_connections_enforcement);
 
     std::cerr << "\n" << g_test_count << " checks, " << g_fail_count << " failures\n";
     return g_fail_count > 0 ? 1 : 0;

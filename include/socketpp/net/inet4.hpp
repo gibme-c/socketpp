@@ -45,8 +45,6 @@ namespace socketpp
 
         inet4_address(uint32_t address, uint16_t port) noexcept;
 
-        inet4_address(std::string_view ip, uint16_t port) noexcept;
-
         static result<inet4_address> parse(std::string_view ip, uint16_t port) noexcept;
 
         static inet4_address any(uint16_t port) noexcept;

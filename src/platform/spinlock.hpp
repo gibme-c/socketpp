@@ -28,6 +28,7 @@
 #define SOCKETPP_SRC_PLATFORM_SPINLOCK_HPP
 
 #include <atomic>
+#include <thread>
 
 #if defined(_MSC_VER)
 #include <immintrin.h>
@@ -57,9 +58,12 @@ namespace socketpp::detail
 
         void lock() noexcept
         {
-            while (flag_.test_and_set(std::memory_order_acquire))
+            for (int spins = 0; flag_.test_and_set(std::memory_order_acquire); ++spins)
             {
-                cpu_pause();
+                if (spins < 64)
+                    cpu_pause();
+                else
+                    std::this_thread::yield();
             }
         }
 

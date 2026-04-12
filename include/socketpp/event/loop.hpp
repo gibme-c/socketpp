@@ -44,6 +44,7 @@
 #include <chrono>
 #include <socketpp/event/dispatcher.hpp>
 #include <socketpp/event/timer.hpp>
+#include <thread>
 #include <vector>
 
 namespace socketpp
@@ -236,15 +237,20 @@ namespace socketpp
         /// Uses platform-appropriate pause/yield hints to reduce contention.
         void spin_lock() noexcept
         {
-            while (post_lock_.test_and_set(std::memory_order_acquire))
+            for (int spins = 0; post_lock_.test_and_set(std::memory_order_acquire); ++spins)
             {
+                if (spins < 64)
+                {
 #if defined(SOCKETPP_COMPILER_MSVC)
-                _mm_pause();
+                    _mm_pause();
 #elif defined(__x86_64__) || defined(__i386__)
-                __builtin_ia32_pause();
+                    __builtin_ia32_pause();
 #elif defined(__aarch64__)
-                asm volatile("yield");
+                    asm volatile("yield");
 #endif
+                }
+                else
+                    std::this_thread::yield();
             }
         }
 

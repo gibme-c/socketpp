@@ -75,7 +75,7 @@ int main()
             else
             {
                 auto sender = std::move(sender_r.value());
-                socketpp::inet4_address dest("127.0.0.1", 9002);
+                auto dest = socketpp::inet4_address::loopback(9002);
 
                 for (int i = 0; i < expected; ++i)
                 {

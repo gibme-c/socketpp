@@ -36,13 +36,12 @@
 ///
 /// Defaults: 3 seconds, 1400 bytes per datagram.
 
-#include <socketpp.hpp>
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <socketpp.hpp>
 #include <thread>
 
 int main(int argc, char *argv[])
@@ -140,11 +139,14 @@ int main(int argc, char *argv[])
 
     std::fprintf(stderr, "\n");
     std::fprintf(stderr, "  duration:       %.2f s\n", secs);
-    std::fprintf(stderr, "  sent:           %llu packets (%.0f pkt/s)\n",
-        static_cast<unsigned long long>(sent_packets), tx_rate);
+    std::fprintf(
+        stderr,
+        "  sent:           %llu packets (%.0f pkt/s)\n",
+        static_cast<unsigned long long>(sent_packets),
+        tx_rate);
     std::fprintf(stderr, "  send failures:  %llu\n", static_cast<unsigned long long>(send_failures));
-    std::fprintf(stderr, "  received:       %llu packets (%.0f pkt/s)\n",
-        static_cast<unsigned long long>(rx_pkts), rx_rate);
+    std::fprintf(
+        stderr, "  received:       %llu packets (%.0f pkt/s)\n", static_cast<unsigned long long>(rx_pkts), rx_rate);
     std::fprintf(stderr, "  received bytes: %llu\n", static_cast<unsigned long long>(rx_bytes));
     std::fprintf(stderr, "  throughput:     %.1f Mbps\n", rx_mbps);
     std::fprintf(stderr, "  loss:           %.1f%%\n", loss_pct);

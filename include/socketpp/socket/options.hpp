@@ -534,6 +534,8 @@ namespace socketpp
         }
 
       private:
+        result<apply_result> apply_entries(socket_t handle, bool skip_multicast) const noexcept;
+
         friend result<apply_result> apply_options_impl(socket_t handle, const socket_options &opts) noexcept;
 
         struct option_entry

@@ -65,23 +65,6 @@ namespace socketpp
         sin.sin_port = htons(port);
     }
 
-    inet4_address::inet4_address(std::string_view ip, uint16_t port) noexcept
-    {
-        std::memset(storage_, 0, sizeof(storage_));
-
-        auto &sin = as_sin(storage_);
-
-        sin.sin_family = AF_INET;
-        sin.sin_port = htons(port);
-
-        char buf[INET_ADDRSTRLEN] = {};
-        const auto copy_len = ip.size() < sizeof(buf) - 1 ? ip.size() : sizeof(buf) - 1;
-
-        std::memcpy(buf, ip.data(), copy_len);
-
-        inet_pton(AF_INET, buf, &sin.sin_addr);
-    }
-
     result<inet4_address> inet4_address::parse(std::string_view ip, uint16_t port) noexcept
     {
         inet4_address result_addr;

@@ -69,8 +69,10 @@ namespace socketpp
                             *backoff_ms = std::min(*backoff_ms * 2, 5000);
 
                             loop.defer(
-                                std::chrono::milliseconds(delay),
-                                [&loop, listen_fd, backoff_ms]() { loop.io().modify(listen_fd, io_event::readable); }).release();
+                                    std::chrono::milliseconds(delay),
+                                    [&loop, listen_fd, backoff_ms]()
+                                    { loop.io().modify(listen_fd, io_event::readable); })
+                                .release();
 
                             handler(ec, Addr {});
 

@@ -73,9 +73,12 @@ namespace socketpp
         size_t worker_threads = 0;
         size_t max_write_buffer = 16 * 1024 * 1024;
         size_t read_buffer_size = 65536;
+        /// Socket options applied before bind. Default enables SO_REUSEADDR (rapid restarts)
+        /// and TCP_NODELAY. On Windows, SO_REUSEADDR allows port sharing; callers needing
+        /// exclusive bind should add .exclusive_addr(true) to prevent cross-process hijacking.
         socket_options sock_opts = socket_options {}.reuse_addr(true).tcp_nodelay(true);
         int backlog = default_backlog;
-        size_t max_connections = 0;
+        size_t max_connections = 10000; ///< Max concurrent connections. 0 = unlimited.
     };
 
     /**

@@ -1208,6 +1208,68 @@ void test_event_loop_tcp_accept()
 }
 
 // ===========================================================================
+// Negative tests (audit INFO-1)
+// ===========================================================================
+
+void test_inet4_parse_empty_string()
+{
+    auto r = socketpp::inet4_address::parse("", 80);
+    CHECK(!r);
+}
+
+void test_inet4_parse_overlong_string()
+{
+    std::string overlong(64, 'x');
+    auto r = socketpp::inet4_address::parse(overlong, 80);
+    CHECK(!r);
+}
+
+void test_tcp_send_on_closed_socket()
+{
+    auto r = socketpp::socket::create(socketpp::address_family::ipv4, socketpp::socket_type::stream);
+    CHECK_MSG(r, "socket::create failed");
+    if (!r)
+        return;
+    auto sock = std::move(r.value());
+    sock.close();
+
+    socketpp::tcp_socket tcp(std::move(sock));
+    const char data[] = "hello";
+    auto sr = tcp.send(data, sizeof(data));
+    CHECK(!sr);
+}
+
+void test_tcp_recv_on_closed_socket()
+{
+    auto r = socketpp::socket::create(socketpp::address_family::ipv4, socketpp::socket_type::stream);
+    CHECK_MSG(r, "socket::create failed");
+    if (!r)
+        return;
+    auto sock = std::move(r.value());
+    sock.close();
+
+    socketpp::tcp_socket tcp(std::move(sock));
+    char buf[64];
+    auto rr = tcp.recv(buf, sizeof(buf));
+    CHECK(!rr);
+}
+
+void test_udp_send_on_closed_socket()
+{
+    auto r = socketpp::socket::create(socketpp::address_family::ipv4, socketpp::socket_type::dgram);
+    CHECK_MSG(r, "socket::create failed");
+    if (!r)
+        return;
+    auto sock = std::move(r.value());
+    sock.close();
+
+    socketpp::udp4_socket udp(std::move(sock));
+    const char data[] = "hello";
+    auto sr = udp.send_to(data, sizeof(data), socketpp::inet4_address::loopback(9999));
+    CHECK(!sr);
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -1284,6 +1346,14 @@ int main()
     RUN_TEST(test_event_loop_stop_exits_run);
     RUN_TEST(test_event_loop_run_once);
     RUN_TEST(test_event_loop_tcp_accept);
+
+    // Negative tests (audit INFO-1)
+    std::cerr << "\n--- negative ---\n";
+    RUN_TEST(test_inet4_parse_empty_string);
+    RUN_TEST(test_inet4_parse_overlong_string);
+    RUN_TEST(test_tcp_send_on_closed_socket);
+    RUN_TEST(test_tcp_recv_on_closed_socket);
+    RUN_TEST(test_udp_send_on_closed_socket);
 
     std::cerr << "\n" << g_test_count << " checks, " << g_fail_count << " failures\n";
     return g_fail_count > 0 ? 1 : 0;

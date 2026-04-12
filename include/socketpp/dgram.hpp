@@ -71,7 +71,10 @@ namespace socketpp
     struct dgram_config
     {
         size_t worker_threads = 0; ///< Thread pool size. 0 = auto-detect.
-        socket_options sock_opts = socket_options {}.reuse_addr(true); ///< Socket options applied before bind.
+        /// Socket options applied before bind. Default enables SO_REUSEADDR for rapid restarts.
+        /// On Windows, SO_REUSEADDR allows port sharing; callers needing exclusive bind should
+        /// add .exclusive_addr(true) to prevent cross-process hijacking.
+        socket_options sock_opts = socket_options {}.reuse_addr(true);
         size_t read_buffer_size = 65536; ///< Read buffer size (>= largest expected datagram).
         size_t recv_batch_size = 32; ///< Max datagrams per recv_batch() call.
     };

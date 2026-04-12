@@ -234,7 +234,6 @@ namespace socketpp::detail
                 return make_error_code(errc::already_bound);
 
             peer_entry entry;
-            entry.peer_addr = peer;
             entry.callback = std::move(cb);
 
             peers_.emplace(peer, std::move(entry));
@@ -338,18 +337,7 @@ namespace socketpp::detail
                 Addr src;
                 std::memcpy(&src, src_sa.data(), sizeof(src));
 
-                scoped_lock<spinlock> lock(mutex_);
-
-                auto it = peers_.find(src);
-
-                if (it != peers_.end())
-                {
-                    it->second.callback(recv_buf_, static_cast<size_t>(n));
-                }
-                else if (catch_all_)
-                {
-                    catch_all_(recv_buf_, static_cast<size_t>(n), src);
-                }
+                dispatch(src, static_cast<size_t>(n));
             }
         }
 
@@ -392,6 +380,28 @@ namespace socketpp::detail
             // Synchronous completion or WSA_IO_PENDING: completion will be posted to IOCP.
         }
 
+        /// Lookup callback under lock, then invoke outside the lock.
+        void dispatch(const Addr &src, size_t bytes)
+        {
+            recv_callback peer_cb;
+            catch_all_callback catch_all_cb;
+            {
+                scoped_lock<spinlock> lock(mutex_);
+
+                auto it = peers_.find(src);
+
+                if (it != peers_.end())
+                    peer_cb = it->second.callback;
+                else if (catch_all_)
+                    catch_all_cb = catch_all_;
+            }
+
+            if (peer_cb)
+                peer_cb(recv_buf_, bytes);
+            else if (catch_all_cb)
+                catch_all_cb(recv_buf_, bytes, src);
+        }
+
         /// IOCP-based event loop that replaces the old WSAPoll polling loop.
         /// Blocks on GetQueuedCompletionStatusEx until a datagram completion
         /// or stop sentinel arrives.
@@ -428,21 +438,10 @@ namespace socketpp::detail
                         Addr src;
                         std::memcpy(&src, src_sa.data(), sizeof(src));
 
-                        scoped_lock<spinlock> lock(mutex_);
-
-                        auto it = peers_.find(src);
-
-                        if (it != peers_.end())
-                        {
-                            it->second.callback(recv_buf_, static_cast<size_t>(actual_bytes));
-                        }
-                        else if (catch_all_)
-                        {
-                            catch_all_(recv_buf_, static_cast<size_t>(actual_bytes), src);
-                        }
+                        dispatch(src, static_cast<size_t>(actual_bytes));
                     }
 
-                    // Re-arm for the next datagram.
+                    // Re-arm AFTER callback returns (data in recv_buf_ is consumed).
                     if (!stop_requested_.load(std::memory_order_relaxed))
                         arm_overlapped_recv();
                 }
@@ -454,7 +453,6 @@ namespace socketpp::detail
 
         struct peer_entry
         {
-            Addr peer_addr;
             recv_callback callback;
         };
 

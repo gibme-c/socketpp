@@ -267,7 +267,15 @@ namespace
                 done.store(true, std::memory_order_relaxed);
             });
 
-        socketpp::inet4_address dest(server_ip, 53);
+        auto dest_r = socketpp::inet4_address::parse(server_ip, 53);
+
+        if (!dest_r)
+        {
+            std::cerr << "Invalid server IP: " << server_ip << "\n";
+            return;
+        }
+
+        auto dest = dest_r.value();
 
         std::cout << "Querying " << server_ip << " for A record of " << domain << "...\n";
 

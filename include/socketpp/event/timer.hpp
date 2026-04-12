@@ -77,8 +77,7 @@ namespace socketpp
         }
 
         /// @brief Move constructor. Transfers ownership from other.
-        timer_handle(timer_handle &&other) noexcept:
-            id_(other.id_), cancel_fn_(std::move(other.cancel_fn_))
+        timer_handle(timer_handle &&other) noexcept: id_(other.id_), cancel_fn_(std::move(other.cancel_fn_))
         {
             other.id_ = 0;
             other.cancel_fn_ = nullptr;

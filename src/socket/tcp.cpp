@@ -27,9 +27,16 @@
 #include "../platform/detect_internal.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <socketpp/socket/tcp.hpp>
 #include <vector>
+
+#if !defined(SOCKETPP_OS_WINDOWS)
+static_assert(sizeof(socketpp::iovec) == sizeof(struct ::iovec), "iovec size mismatch");
+static_assert(offsetof(socketpp::iovec, iov_base) == offsetof(struct ::iovec, iov_base), "iov_base offset mismatch");
+static_assert(offsetof(socketpp::iovec, iov_len) == offsetof(struct ::iovec, iov_len), "iov_len offset mismatch");
+#endif
 
 namespace socketpp
 {

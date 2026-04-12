@@ -238,7 +238,7 @@ namespace socketpp
 
     } // namespace
 
-    result<apply_result> socket_options::apply_to(socket_t handle) const noexcept
+    result<apply_result> socket_options::apply_entries(socket_t handle, bool skip_multicast) const noexcept
     {
 #if defined(SOCKETPP_OS_WINDOWS)
         bool win_has_idle = false, win_has_interval = false;
@@ -247,6 +247,9 @@ namespace socketpp
 
         for (const auto &entry : entries_)
         {
+            if (skip_multicast && is_multicast_entry(entry.id))
+                continue;
+
             if (!entry.platform_available)
                 return make_error_code(errc::option_not_supported);
 
@@ -450,218 +453,14 @@ namespace socketpp
         return ar;
     }
 
+    result<apply_result> socket_options::apply_to(socket_t handle) const noexcept
+    {
+        return apply_entries(handle, false);
+    }
+
     result<apply_result> socket_options::apply_pre_bind(socket_t handle) const noexcept
     {
-#if defined(SOCKETPP_OS_WINDOWS)
-        bool win_has_idle = false, win_has_interval = false;
-        int win_idle_sec = 0, win_interval_sec = 0;
-#endif
-
-        for (const auto &entry : entries_)
-        {
-            if (is_multicast_entry(entry.id))
-                continue;
-
-            if (!entry.platform_available)
-                return make_error_code(errc::option_not_supported);
-
-            const int val = read_int(entry.data);
-            result<void> rc;
-
-            switch (entry.id)
-            {
-                case socket_option_id::reuse_addr:
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_REUSEADDR, val);
-                    break;
-
-                case socket_option_id::reuse_port:
-#if defined(SOCKETPP_OS_LINUX) || defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_REUSEPORT, val);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::exclusive_addr:
-#if defined(SOCKETPP_OS_WINDOWS)
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, val);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::recv_buf:
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_RCVBUF, val);
-                    break;
-
-                case socket_option_id::send_buf:
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_SNDBUF, val);
-                    break;
-
-                case socket_option_id::tcp_nodelay:
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_NODELAY, val);
-                    break;
-
-                case socket_option_id::tcp_cork:
-#if defined(SOCKETPP_OS_LINUX)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_CORK, val);
-#elif defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_NOPUSH, val);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::tcp_notsent_lowat:
-#if defined(SOCKETPP_OS_LINUX) || defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_NOTSENT_LOWAT, val);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::tcp_user_timeout:
-#if defined(SOCKETPP_OS_LINUX)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_USER_TIMEOUT, val);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::tcp_fastopen:
-#if defined(SOCKETPP_OS_LINUX) || defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_FASTOPEN, val);
-#elif defined(SOCKETPP_OS_WINDOWS)
-#ifndef TCP_FASTOPEN
-#define TCP_FASTOPEN 15
-#endif
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_FASTOPEN, 1);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::tcp_defer_accept:
-                    rc = apply_tcp_defer_accept(handle, val);
-                    break;
-
-                case socket_option_id::keep_alive:
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_KEEPALIVE, val);
-                    break;
-
-                case socket_option_id::keep_alive_idle:
-#if defined(SOCKETPP_OS_LINUX)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_KEEPIDLE, val);
-#elif defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_KEEPALIVE, val);
-#elif defined(SOCKETPP_OS_WINDOWS)
-                    win_has_idle = true;
-                    win_idle_sec = val;
-#endif
-                    break;
-
-                case socket_option_id::keep_alive_interval:
-#if defined(SOCKETPP_OS_LINUX) || defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_KEEPINTVL, val);
-#elif defined(SOCKETPP_OS_WINDOWS)
-                    win_has_interval = true;
-                    win_interval_sec = val;
-#endif
-                    break;
-
-                case socket_option_id::keep_alive_count:
-#if defined(SOCKETPP_OS_LINUX) || defined(SOCKETPP_OS_MACOS)
-                    rc = set_int_opt(handle, IPPROTO_TCP, TCP_KEEPCNT, val);
-#else
-                    rc = make_error_code(errc::option_not_supported);
-#endif
-                    break;
-
-                case socket_option_id::linger_opt:
-                    rc = apply_linger(handle, entry.data);
-                    break;
-
-                case socket_option_id::ipv6_only:
-                    rc = set_int_opt(handle, IPPROTO_IPV6, IPV6_V6ONLY, val);
-                    break;
-
-                case socket_option_id::ip_tos:
-                    rc = set_int_opt(handle, IPPROTO_IP, IP_TOS, val);
-                    break;
-
-                case socket_option_id::broadcast:
-                    rc = set_int_opt(handle, SOL_SOCKET, SO_BROADCAST, val);
-                    break;
-
-                case socket_option_id::multicast_join:
-                case socket_option_id::multicast_leave:
-                    break; // Handled by apply_post_bind
-
-                case socket_option_id::multicast_ttl:
-                    rc = set_int_opt(handle, IPPROTO_IP, IP_MULTICAST_TTL, val);
-                    break;
-
-                case socket_option_id::multicast_loop:
-                    rc = set_int_opt(handle, IPPROTO_IP, IP_MULTICAST_LOOP, val);
-                    break;
-
-                case socket_option_id::multicast_ttl_v6:
-                    rc = set_int_opt(handle, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, val);
-                    break;
-
-                case socket_option_id::multicast_loop_v6:
-                    rc = set_int_opt(handle, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, val);
-                    break;
-
-                case socket_option_id::multicast_if:
-                    rc = apply_multicast_if(handle, entry.data);
-                    break;
-
-                case socket_option_id::multicast_if_v6:
-                    rc = apply_multicast_if_v6(handle, entry.data);
-                    break;
-            }
-
-            if (!rc)
-                return rc.error();
-        }
-
-#if defined(SOCKETPP_OS_WINDOWS)
-        if (win_has_idle || win_has_interval)
-        {
-            auto rc = apply_windows_keepalive(handle, win_idle_sec, win_has_idle, win_interval_sec, win_has_interval);
-            if (!rc)
-                return rc.error();
-        }
-#endif
-
-        apply_result ar;
-
-#if defined(SOCKETPP_OS_WINDOWS)
-        auto sock = static_cast<SOCKET>(handle);
-#else
-        auto sock = static_cast<int>(handle);
-#endif
-
-        if (has_send_buf_)
-        {
-            int val = 0;
-            socklen_t len = sizeof(val);
-
-            if (::getsockopt(sock, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char *>(&val), &len) == 0)
-                ar.actual_send_buf = val;
-        }
-
-        if (has_recv_buf_)
-        {
-            int val = 0;
-            socklen_t len = sizeof(val);
-
-            if (::getsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char *>(&val), &len) == 0)
-                ar.actual_recv_buf = val;
-        }
-
-        return ar;
+        return apply_entries(handle, true);
     }
 
     result<void> socket_options::apply_post_bind(socket_t handle) const noexcept

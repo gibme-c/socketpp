@@ -33,6 +33,7 @@
 #include <socketpp/platform/detect.hpp>
 #include <socketpp/platform/error.hpp>
 #include <socketpp/platform/types.hpp>
+#include <thread>
 #include <utility>
 
 namespace socketpp
@@ -161,15 +162,20 @@ namespace socketpp
 
             spin_guard(std::atomic_flag &f) noexcept: flag_(f)
             {
-                while (flag_.test_and_set(std::memory_order_acquire))
+                for (int spins = 0; flag_.test_and_set(std::memory_order_acquire); ++spins)
                 {
+                    if (spins < 64)
+                    {
 #if defined(SOCKETPP_COMPILER_MSVC)
-                    _mm_pause();
+                        _mm_pause();
 #elif defined(__x86_64__) || defined(__i386__)
-                    __builtin_ia32_pause();
+                        __builtin_ia32_pause();
 #elif defined(__aarch64__)
-                    asm volatile("yield");
+                        asm volatile("yield");
 #endif
+                    }
+                    else
+                        std::this_thread::yield();
                 }
             }
 
