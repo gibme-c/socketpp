@@ -1,5 +1,7 @@
 # Socket++
 
+[![CI Build Tests](https://github.com/gibme-c/socketpp/actions/workflows/ci.yml/badge.svg)](https://github.com/gibme-c/socketpp/actions/workflows/ci.yml)
+
 A cross-platform, non-blocking socket library for C++17 with native event loop backends and a callback-driven high-level API.
 
 Socket++ gives you TCP streams and UDP datagrams that work identically on Linux, macOS, and Windows. Under the hood, each platform uses its native I/O multiplexer -- epoll, kqueue, or IOCP -- but you never touch any of that directly. You register callbacks, call a factory method, and the library handles the event loop, connection lifecycle, and thread dispatch. All user callbacks run on a configurable thread pool, never on the event loop thread, so your handlers can do real work without blocking I/O.
@@ -10,24 +12,25 @@ Both IPv4 and IPv6 are first-class citizens. Every type has separate IPv4 and IP
 
 - **TCP streams** -- `stream4`, `stream6` with `on_connect`, `on_data`, `on_close`, and `on_error` handlers; unified type for both server (`listen`) and client (`connect`) roles
 - **UDP datagrams** -- `dgram4`, `dgram6` with `on_data` handler and synchronous `send_to()`; batch send/recv via `send_batch()` and `on_data_batch()`; no client/server distinction
+- **Per-peer UDP handles** -- `dgram4::claim()` / `dgram6::claim()` captures traffic from a specific peer into a dedicated `dgram4_peer` / `dgram6_peer` handle with its own serialized callback queue
 - **Native event backends** -- epoll (Linux), kqueue (macOS), IOCP (Windows); selected at compile time
 - **RAII lifecycle** -- factory methods open sockets and start the event loop; destructors clean everything up; no `start()`/`stop()`/`run()` needed
 - **Flow control** -- `pause()`/`resume()` on streams, connections, and datagrams backed by kernel buffers
 - **Serialized execution** -- all callbacks for a given handle run serially (at most one at a time), eliminating the need for user-side locking within callbacks
-- **Per-peer UDP handles** -- `dgram4::claim()` / `dgram6::claim()` captures traffic from a specific peer into a dedicated `dgram4_peer` / `dgram6_peer` handle with its own serialized callback queue
 - **Timers and dispatch** -- `defer()` for one-shot timers, `repeat()` for recurring timers, `post()` for cross-thread dispatch; all callbacks run on the thread pool
 - **Thread pool dispatch** -- all user callbacks run on a worker pool (defaults to hardware concurrency, minimum 2)
 - **Portable error handling** -- `result<T>` return type with `socketpp::errc` codes that normalize platform-specific socket errors
 - **Socket options builder** -- `socket_options` class covering reuse, keepalive, nodelay, buffer sizes, linger, multicast, and more
 - **Security hardened** -- stack protectors, control-flow integrity, ASLR/DEP, RELRO, Spectre mitigations across GCC, Clang, and MSVC
+- **Zero external dependencies** -- only the C++17 standard library and OS socket APIs
 
 ### Platform Support
 
-| Platform | Event Backend | Link Dependencies |
-|----------|---------------|-------------------|
-| Linux | epoll | POSIX sockets (libc) |
-| macOS | kqueue | POSIX sockets (libc) |
-| Windows | IOCP | `ws2_32`, `mswsock` |
+| Platform | Event Backend | Compiler | Link Dependencies |
+|----------|---------------|----------|-------------------|
+| Linux    | epoll         | GCC, Clang | POSIX sockets (libc) |
+| macOS    | kqueue        | Clang, AppleClang | POSIX sockets (libc) |
+| Windows  | IOCP          | MSVC, MinGW GCC | `ws2_32`, `mswsock` |
 
 ## Getting Started
 
@@ -48,14 +51,32 @@ cmake --build build --config Release -j
 | Option | Default | Description |
 |--------|---------|-------------|
 | `SOCKETPP_BUILD_EXAMPLES` | `OFF` | Build the example programs |
-| `SOCKETPP_BUILD_TESTS` | `OFF` | Build the test suite |
+| `SOCKETPP_BUILD_TESTS` | `OFF` | Build the test suite and benchmarks |
+| `SOCKETPP_BUILD_FUZZERS` | `OFF` | Build libFuzzer harnesses (Clang + Linux only) |
 
 ### Adding to Your Project
+
+**As a subdirectory:**
 
 ```cmake
 add_subdirectory(socketpp)
 target_link_libraries(your_target PRIVATE socketpp)
 ```
+
+**Via FetchContent:**
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    socketpp
+    GIT_REPOSITORY https://github.com/gibme-c/socketpp.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(socketpp)
+target_link_libraries(your_target PRIVATE socketpp)
+```
+
+Platform link dependencies (`ws2_32`, `mswsock` on Windows) are handled automatically.
 
 ## Usage
 
@@ -498,15 +519,74 @@ TCP connections are reference-counted internally (`shared_ptr` + `enable_shared_
 
 Factory methods start the event loop but do not register sockets for I/O. The `on_connect()` call (for streams) or `on_data()` call (for datagrams) posts the registration to the event loop thread. This eliminates the race between factory return and callback setup -- callbacks are always set before data delivery begins.
 
+## Examples
+
+Build with `-DSOCKETPP_BUILD_EXAMPLES=ON` to get the example programs:
+
+| Example | Description |
+|---------|-------------|
+| `tcp_echo_server` | TCP echo server using `stream4` and `stream6` with connection callbacks |
+| `tcp_echo_client` | TCP echo client using `stream4` and `stream6` with data round-trip |
+| `udp_echo_server` | UDP echo server using `dgram4` and `dgram6` with `on_data` and `send_to` |
+| `udp_batch_recv` | Dual-stack IPv4/IPv6 UDP sender/receiver demonstrating batch operations |
+| `udp_dns_query` | Complete UDP client that sends a DNS A-record query and parses the RFC 1035 response |
+
 ## Testing
 
 Build with `-DSOCKETPP_BUILD_TESTS=ON` to get the test executables:
 
 ```bash
-./build/tests           # all platforms and compilers
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSOCKETPP_BUILD_TESTS=ON
+cmake --build build --config Release -j
+ctest --test-dir build --build-config Release --output-on-failure
 ```
 
-The test suite includes low-level socket tests, event loop integration tests, and high-level API tests covering TCP streams, UDP datagrams with round-trip verification, batch send/recv, per-peer claim/relinquish, pause/resume flow control, timers, cross-thread dispatch, serialized execution guarantees, and concurrent access patterns.
+The test suite includes:
+
+| Test | Description |
+|------|-------------|
+| `unit_tests` | Address parsing, socket options, low-level socket operations |
+| `blackbox_verify` | Integration tests for complete TCP and UDP workflows |
+| `high_level_tests` | IPv4 high-level API: streams, datagrams, peer claims, timers, flow control |
+| `ipv6_high_level_tests` | IPv6 high-level API: same coverage as IPv4 tests |
+| `error_path_tests` | Error conditions, invalid arguments, resource limits |
+| `concurrency_tests` | Thread safety, concurrent access, serialized execution guarantees |
+
+### Benchmarks
+
+Two throughput benchmarks are included (built with tests, not registered with CTest):
+
+| Benchmark | Description |
+|-----------|-------------|
+| `udp_throughput_bench` | UDP loopback send/recv throughput measurement |
+| `tcp_throughput_bench` | TCP loopback stream throughput measurement |
+
+### Fuzzing
+
+Build with `-DSOCKETPP_BUILD_FUZZERS=ON` (requires Clang on Linux) to get libFuzzer harnesses with AddressSanitizer:
+
+| Harness | Description |
+|---------|-------------|
+| `socketpp-fuzz_inet4_parse` | Fuzz IPv4 address string parsing |
+| `socketpp-fuzz_inet6_parse` | Fuzz IPv6 address string parsing |
+| `socketpp-fuzz_inet4_roundtrip` | Fuzz IPv4 serialize/deserialize round-trip |
+| `socketpp-fuzz_inet6_roundtrip` | Fuzz IPv6 serialize/deserialize round-trip |
+| `socketpp-fuzz_sock_address_roundtrip` | Fuzz generic socket address round-trip |
+
+## Security Hardening
+
+All targets are built with platform-appropriate hardening flags:
+
+| Mitigation | GCC/Clang | MSVC |
+|------------|-----------|------|
+| Stack protector | `-fstack-protector-strong` | `/GS` |
+| Control-flow integrity | `-fcf-protection=full` (x86_64) | `/guard:cf`, `/CETCOMPAT` |
+| FORTIFY_SOURCE | `-D_FORTIFY_SOURCE=2` | `/sdl` |
+| Stack clash protection | `-fstack-clash-protection` (Linux) | -- |
+| ASLR / DEP | `-pie` / RELRO+NOW | `/DYNAMICBASE`, `/NXCOMPAT`, `/HIGHENTROPYVA` |
+| Spectre mitigations | -- | `/Qspectre` |
+
+GCC executables additionally link with `-static-libgcc -static-libstdc++` for self-contained binaries.
 
 ## License
 
