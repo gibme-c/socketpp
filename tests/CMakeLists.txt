@@ -18,6 +18,21 @@ add_executable(udp_throughput_bench udp_throughput_bench.cpp)
 target_link_libraries(udp_throughput_bench PRIVATE socketpp)
 socketpp_configure_executable(udp_throughput_bench)
 
+add_executable(error_path_tests error_path_tests.cpp)
+target_link_libraries(error_path_tests PRIVATE socketpp)
+socketpp_configure_executable(error_path_tests)
+add_test(NAME error_path_tests COMMAND error_path_tests)
+
+add_executable(ipv6_high_level_tests ipv6_high_level_tests.cpp)
+target_link_libraries(ipv6_high_level_tests PRIVATE socketpp)
+socketpp_configure_executable(ipv6_high_level_tests)
+add_test(NAME ipv6_high_level_tests COMMAND ipv6_high_level_tests)
+
+add_executable(concurrency_tests concurrency_tests.cpp)
+target_link_libraries(concurrency_tests PRIVATE socketpp)
+socketpp_configure_executable(concurrency_tests)
+add_test(NAME concurrency_tests COMMAND concurrency_tests)
+
 add_executable(tcp_throughput_bench tcp_throughput_bench.cpp)
 target_link_libraries(tcp_throughput_bench PRIVATE socketpp)
 socketpp_configure_executable(tcp_throughput_bench)

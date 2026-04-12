@@ -36,6 +36,11 @@ if(DEFINED ENV{SOCKETPP_BUILD_TESTS})
     set(SOCKETPP_BUILD_TESTS "$ENV{SOCKETPP_BUILD_TESTS}" CACHE BOOL "Build tests" FORCE)
 endif()
 
+option(SOCKETPP_BUILD_FUZZERS "Build libFuzzer harnesses (Clang + Linux only)" OFF)
+if(DEFINED ENV{SOCKETPP_BUILD_FUZZERS})
+    set(SOCKETPP_BUILD_FUZZERS "$ENV{SOCKETPP_BUILD_FUZZERS}" CACHE BOOL "Build fuzzers" FORCE)
+endif()
+
 
 ## This section describes our general CMake setup options
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -249,4 +254,8 @@ if(SOCKETPP_BUILD_TESTS)
         enable_testing()
     endif()
     add_subdirectory(tests)
+endif()
+
+if(SOCKETPP_BUILD_FUZZERS)
+    add_subdirectory(tests/fuzz)
 endif()
